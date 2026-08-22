@@ -111,6 +111,8 @@ python app.py
 
 `Analyzer` uit `birdnetlib` gebruikt het BirdNET-Analyzer model, niet de oude Lite-analyzer. De standaardlocatie staat op het geografisch midden van Nederland; vul je eigen coördinaten in voor betere filtering. Met `BIRDNET_LOCATION_NAME` stel je de zichtbare plaatsnaam expliciet in. Zonder deze instelling wordt de plaatsnaam eenmalig opgezocht op basis van de ingestelde coördinaten en lokaal gecachet.
 
+De schuifregelaar **Min. zekerheid** in de webinterface werkt van 10% tot 95%, geldt voor alle bezoekers van dezelfde app en wordt op de server bewaard voor een volgende herstart.
+
 Voor de volledige sessie-opname kun je `BIRDNET_FULL_RECORD_FORMAT` instellen op `mp3`, `m4a`, `mp4` of `wav`. `mp4` wordt als audio-only `.m4a` opgeslagen, omdat dat voor audio-opnames het gebruikelijke MP4-containerformaat is. Detectiefragmenten blijven WAV, zodat ze zonder kwaliteitsverlies direct opnieuw geanalyseerd kunnen worden.
 
 De webinterface toont ook:
@@ -208,6 +210,7 @@ http://127.0.0.1:5055/api/devices
 | --- | --- |
 | `/` | Webinterface |
 | `/api/status` | Huidige opname- en applicatiestatus |
+| `/api/settings` | Stel tijdens gebruik de minimale zekerheid in (10–95%) |
 | `/api/devices` | Beschikbare audioapparaten |
 | `/api/start` | Live opname starten |
 | `/api/stop` | Live opname stoppen |

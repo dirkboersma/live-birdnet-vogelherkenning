@@ -66,6 +66,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 LIVE_CHUNKS_DIR = DATA_DIR / "live-chunks"
 CONFIG_DIR = BASE_DIR / "config"
 DUTCH_NAMES_CSV = CONFIG_DIR / "dutch_names.csv"
+RUNTIME_SETTINGS_PATH = DATA_DIR / "runtime-settings.json"
 
 for directory in (RECORDINGS_DIR, CLIPS_DIR, SPECTROGRAMS_DIR, UPLOADS_DIR, LIVE_CHUNKS_DIR, CONFIG_DIR):
     directory.mkdir(parents=True, exist_ok=True)
@@ -85,10 +86,19 @@ def env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def saved_min_confidence(default: float) -> float:
+    try:
+        value = float(json.loads(RUNTIME_SETTINGS_PATH.read_text(encoding="utf-8"))["min_confidence"])
+        return value if 0.10 <= value <= 0.95 else default
+    except (OSError, ValueError, TypeError, KeyError):
+        return default
+
+
 SAMPLE_RATE = env_int("BIRDNET_SAMPLE_RATE", 48_000)
 CHANNELS = 1
 ANALYSIS_SECONDS = env_float("BIRDNET_ANALYSIS_SECONDS", 3.0)
-MIN_CONFIDENCE = env_float("BIRDNET_MIN_CONFIDENCE", 0.60)
+MIN_CONFIDENCE = saved_min_confidence(env_float("BIRDNET_MIN_CONFIDENCE", 0.60))
+settings_lock = threading.Lock()
 PRE_ROLL_SECONDS = env_float("BIRDNET_PRE_ROLL_SECONDS", 1.0)
 POST_ROLL_SECONDS = env_float("BIRDNET_POST_ROLL_SECONDS", 1.0)
 RING_BUFFER_SECONDS = env_float("BIRDNET_RING_BUFFER_SECONDS", 90.0)
@@ -272,20 +282,15 @@ INDEX_HTML = """
       padding: 14px;
       border-bottom: 1px solid var(--line);
     }
-    .detection-panel summary {
+    .detection-panel-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       padding: 14px;
-      cursor: pointer;
-      list-style: none;
-      font-size: 18px;
-      font-weight: 750;
     }
-    .detection-panel summary::-webkit-details-marker { display: none; }
-    .detection-panel summary::after { content: "Toon alle"; color: var(--muted); font-size: 13px; font-weight: 600; }
-    .detection-panel details[open] summary::after { content: "Toon minder"; }
+    .detection-panel-header h2 { margin: 0; padding: 0; border: 0; }
+    .detection-toggle { min-height: 34px; padding: 0 10px; font-size: 13px; }
     .detection-count { color: var(--muted); font-size: 13px; font-weight: 600; margin-left: auto; }
     .detection-list-wrap {
       position: relative;
@@ -293,8 +298,8 @@ INDEX_HTML = """
       overflow: hidden;
       border-top: 1px solid var(--line);
     }
-    .detection-panel details[open] .detection-list-wrap { max-height: none; }
-    .detection-panel details:not([open]) .detection-list-wrap::after {
+    .detection-panel.is-expanded .detection-list-wrap { max-height: none; }
+    .detection-panel:not(.is-expanded) .detection-list-wrap::after {
       content: "";
       position: absolute;
       z-index: 1;
@@ -319,6 +324,20 @@ INDEX_HTML = """
     .detection-name { font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
     .detection-meta { color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
     .detection-meta a { color: var(--accent); font-weight: 700; text-decoration: none; }
+    .browser-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .browser-controls button { min-width: 104px; }
+    .confidence-control {
+      display: grid;
+      grid-template-columns: auto minmax(110px, 1fr) 42px;
+      gap: 8px;
+      align-items: center;
+      min-width: 255px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .confidence-control input { width: 100%; accent-color: var(--accent); }
+    .confidence-control output { color: var(--ink); font-variant-numeric: tabular-nums; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -384,7 +403,8 @@ INDEX_HTML = """
       header { display: block; }
       .toolbar { align-items: stretch; }
       .upload-form { width: 100%; }
-      button { flex: 1; }
+      .browser-controls, .confidence-control { width: 100%; }
+      .upload-form button { flex: 1; }
       .status { grid-template-columns: 1fr 1fr; }
       th:nth-child(6), td:nth-child(6) { display: none; }
       .spectrogram-live { height: 130px; }
@@ -411,9 +431,14 @@ INDEX_HTML = """
     </header>
 
     <section class="toolbar">
-      <button id="browserStart" class="primary">Start browsermicrofoon</button>
-      <button id="browserStop" class="warning" disabled>Stop browsermicrofoon</button>
-      <button id="refresh">Ververs status</button>
+      <div class="browser-controls">
+        <button id="browserStart" class="primary">Start</button>
+        <button id="browserStop" class="warning" disabled>Stop</button>
+      </div>
+      <label class="confidence-control" for="minConfidence">Min. zekerheid
+        <input id="minConfidence" type="range" min="10" max="95" step="1" value="60">
+        <output id="minConfidenceValue">60%</output>
+      </label>
       <form id="uploadForm" class="upload-form">
         <input id="uploadFile" name="audio_file" type="file" accept=".mp3,.mp4,.m4a,.mp4a,.wav,.aiff,.aif,audio/*">
         <button id="uploadButton" type="submit">Analyseer bestand</button>
@@ -422,14 +447,16 @@ INDEX_HTML = """
     </section>
 
     <section class="panel detection-panel" style="margin-bottom: 16px;">
-      <details id="detectionDetails">
-        <summary>Live detecties <span id="detectionCount" class="detection-count"></span></summary>
+      <div class="detection-panel-header">
+        <h2>Live detecties</h2>
+        <span id="detectionCount" class="detection-count"></span>
+        <button id="detectionToggle" class="detection-toggle" type="button">Meer</button>
+      </div>
         <div class="detection-list-wrap">
           <ol id="detections" class="detection-list">
             <li class="empty">Nog geen detecties.</li>
           </ol>
         </div>
-      </details>
     </section>
 
     <section class="panel" style="margin-bottom: 16px;">
@@ -439,7 +466,7 @@ INDEX_HTML = """
     </section>
 
     <section class="panel" style="margin-bottom: 16px;">
-      <h2>Browsermicrofoon</h2>
+      <h2>Wat gebeurt hier?</h2>
       <p>De browser stuurt elke 0,3 seconden een compact audiofragment. BirdNET analyseert telkens het meest recente venster van drie seconden. Chrome en Firefox gebruiken waar mogelijk WebM/Opus; Safari gebruikt een geschikt eigen formaat. De server zet het fragment tijdelijk om voor BirdNET en verwijdert het daarna.</p>
       <details style="margin-top: 12px;">
         <summary>Lokale microfoon van de server</summary>
@@ -468,7 +495,6 @@ INDEX_HTML = """
       browserStop: document.querySelector("#browserStop"),
       start: document.querySelector("#start"),
       stop: document.querySelector("#stop"),
-      refresh: document.querySelector("#refresh"),
       uploadForm: document.querySelector("#uploadForm"),
       uploadFile: document.querySelector("#uploadFile"),
       uploadButton: document.querySelector("#uploadButton"),
@@ -484,6 +510,10 @@ INDEX_HTML = """
       locationAttribution: document.querySelector("#locationAttribution"),
       detections: document.querySelector("#detections"),
       detectionCount: document.querySelector("#detectionCount"),
+      detectionPanel: document.querySelector(".detection-panel"),
+      detectionToggle: document.querySelector("#detectionToggle"),
+      minConfidence: document.querySelector("#minConfidence"),
+      minConfidenceValue: document.querySelector("#minConfidenceValue"),
       liveSpectrogram: document.querySelector("#liveSpectrogram"),
       spectrogramState: document.querySelector("#spectrogramState")
     };
@@ -519,6 +549,22 @@ INDEX_HTML = """
       return data;
     }
 
+    async function updateMinConfidence() {
+      const value = Number(els.minConfidence.value);
+      els.minConfidenceValue.textContent = `${value}%`;
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_confidence: value / 100 })
+      });
+      const data = await response.json();
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || "Instelling kon niet worden opgeslagen.");
+      }
+      setMessage(`Minimale zekerheid ingesteld op ${Math.round(data.min_confidence * 100)}%.`);
+      refreshStatus();
+    }
+
     async function uploadAudioFile() {
       if (!els.uploadFile.files.length) {
         setMessage("Kies eerst een audiobestand.", true);
@@ -551,6 +597,8 @@ INDEX_HTML = """
           ? "Lokale opname actief"
           : "Gestopt";
       els.confidence.textContent = `${Math.round(data.min_confidence * 100)}%`;
+      els.minConfidence.value = Math.round(data.min_confidence * 100);
+      els.minConfidenceValue.textContent = `${els.minConfidence.value}%`;
       const browserDuration = browserRecordingActive && browserRecordingStartedAt
         ? (Date.now() - browserRecordingStartedAt) / 1000
         : data.recording_duration_seconds;
@@ -925,7 +973,21 @@ INDEX_HTML = """
       refreshStatus();
     });
 
-    els.refresh.addEventListener("click", refreshStatus);
+    els.minConfidence.addEventListener("input", () => {
+      els.minConfidenceValue.textContent = `${els.minConfidence.value}%`;
+    });
+    els.minConfidence.addEventListener("change", async () => {
+      try {
+        await updateMinConfidence();
+      } catch (error) {
+        setMessage(error.message, true);
+        refreshStatus();
+      }
+    });
+    els.detectionToggle.addEventListener("click", () => {
+      const expanded = els.detectionPanel.classList.toggle("is-expanded");
+      els.detectionToggle.textContent = expanded ? "Minder" : "Meer";
+    });
     els.uploadForm.addEventListener("submit", (event) => {
       event.preventDefault();
       uploadAudioFile();
@@ -1413,6 +1475,9 @@ class BirdNetService:
         if RecordingBuffer is None or Analyzer is None:
             raise RuntimeError(f"birdnetlib is niet beschikbaar: {BIRDNET_IMPORT_ERROR}")
 
+        with settings_lock:
+            min_confidence = MIN_CONFIDENCE
+
         with self._lock:
             if self._analyzer is None:
                 try:
@@ -1427,14 +1492,14 @@ class BirdNetService:
                 lat=BIRDNET_LAT,
                 lon=BIRDNET_LON,
                 date=date,
-                min_conf=MIN_CONFIDENCE,
+                min_conf=min_confidence,
             )
             recording.analyze()
 
         detections = []
         for detection in recording.detections:
             confidence = float(detection.get("confidence") or 0)
-            if confidence < MIN_CONFIDENCE:
+            if confidence < min_confidence:
                 continue
             detection = dict(detection)
             detection["dutch_name"] = self.resolver.resolve(detection)
@@ -1557,6 +1622,8 @@ class RecorderService:
 
     def status(self) -> dict[str, Any]:
         location_name, location_source = location_resolver.status()
+        with settings_lock:
+            min_confidence = MIN_CONFIDENCE
         with self._lock:
             recording_path = self._recording_path
             recording_temp_path = self._recording_temp_path
@@ -1598,7 +1665,7 @@ class RecorderService:
             "running": running,
             "error": error,
             "sample_rate": SAMPLE_RATE,
-            "min_confidence": MIN_CONFIDENCE,
+            "min_confidence": min_confidence,
             "lat": BIRDNET_LAT,
             "lon": BIRDNET_LON,
             "location_name": location_name,
@@ -2057,6 +2124,32 @@ def api_live_chunk() -> tuple[Response, int] | Response:
 @app.get("/api/status")
 def api_status() -> Response:
     return jsonify(recorder.status())
+
+
+@app.post("/api/settings")
+def api_settings() -> tuple[Response, int] | Response:
+    payload = request.get_json(silent=True) or {}
+    try:
+        min_confidence = float(payload["min_confidence"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Geef een geldige minimale zekerheid op."}), 400
+
+    if not 0.10 <= min_confidence <= 0.95:
+        return jsonify({"ok": False, "error": "Minimale zekerheid moet tussen 10% en 95% liggen."}), 400
+
+    global MIN_CONFIDENCE
+    with settings_lock:
+        previous_min_confidence = MIN_CONFIDENCE
+        MIN_CONFIDENCE = round(min_confidence, 2)
+        try:
+            RUNTIME_SETTINGS_PATH.write_text(
+                json.dumps({"min_confidence": MIN_CONFIDENCE}),
+                encoding="utf-8",
+            )
+        except OSError:
+            MIN_CONFIDENCE = previous_min_confidence
+            return jsonify({"ok": False, "error": "Instelling kon niet worden opgeslagen."}), 500
+    return jsonify({"ok": True, "min_confidence": MIN_CONFIDENCE})
 
 
 @app.get("/api/devices")
