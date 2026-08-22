@@ -373,6 +373,12 @@ INDEX_HTML = """
     </section>
 
     <section class="panel" style="margin-bottom: 16px;">
+      <h2>Live audiogram</h2>
+      <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
+      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
+    </section>
+
+    <section class="panel" style="margin-bottom: 16px;">
       <h2>Browsermicrofoon</h2>
       <p>De browser stuurt elke 0,3 seconden een compact audiofragment. BirdNET analyseert telkens het meest recente venster van drie seconden. Chrome en Firefox gebruiken waar mogelijk WebM/Opus; Safari gebruikt een geschikt eigen formaat. De server zet het fragment tijdelijk om voor BirdNET en verwijdert het daarna.</p>
       <details style="margin-top: 12px;">
@@ -385,20 +391,13 @@ INDEX_HTML = """
 
     <section class="status">
       <div class="metric"><b>Status</b><span id="state">-</span></div>
+      <div class="metric"><b>Opnameduur</b><span id="recordingDuration">-</span></div>
       <div class="metric"><b>Min. zekerheid</b><span id="confidence">-</span></div>
       <div class="metric"><b>Volledige opname</b><span id="recording">-</span></div>
-      <div class="metric"><b>Invoerapparaat</b><span id="inputDevice">-</span></div>
       <div class="metric"><b>Originele opname</b><span id="originalSize">-</span></div>
       <div class="metric"><b>Analyse-opname</b><span id="analysisSize">-</span></div>
       <div class="metric"><b>Uploadanalyse</b><span id="uploadState">-</span></div>
-      <div class="metric"><b>Browseranalyse</b><span id="browserState">-</span></div>
       <div class="metric"><b>Locatie</b><span id="location">-</span><small id="locationAttribution" hidden><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap-bijdragers</a></small></div>
-    </section>
-
-    <section class="panel" style="margin-bottom: 16px;">
-      <h2>Live spectrogram</h2>
-      <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
-      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
     </section>
 
     <section class="panel">
@@ -433,13 +432,12 @@ INDEX_HTML = """
       uploadButton: document.querySelector("#uploadButton"),
       message: document.querySelector("#message"),
       state: document.querySelector("#state"),
+      recordingDuration: document.querySelector("#recordingDuration"),
       confidence: document.querySelector("#confidence"),
       recording: document.querySelector("#recording"),
-      inputDevice: document.querySelector("#inputDevice"),
       originalSize: document.querySelector("#originalSize"),
       analysisSize: document.querySelector("#analysisSize"),
       uploadState: document.querySelector("#uploadState"),
-      browserState: document.querySelector("#browserState"),
       location: document.querySelector("#location"),
       locationAttribution: document.querySelector("#locationAttribution"),
       detections: document.querySelector("#detections"),
@@ -453,7 +451,14 @@ INDEX_HTML = """
     let browserStream = null;
     let browserSequence = 0;
     let browserRecordingActive = false;
+    let browserRecordingStartedAt = null;
     let browserSegmentTimer = null;
+    let browserAudioContext = null;
+    let browserAudioSource = null;
+    let browserAudioProcessor = null;
+    let browserSilentGain = null;
+    let browserPcmTimer = null;
+    let browserPcmChunks = [];
     const browserUploads = new Set();
     const browserSegmentMilliseconds = 300;
 
@@ -503,17 +508,15 @@ INDEX_HTML = """
           ? "Lokale opname actief"
           : "Gestopt";
       els.confidence.textContent = `${Math.round(data.min_confidence * 100)}%`;
+      const browserDuration = browserRecordingActive && browserRecordingStartedAt
+        ? (Date.now() - browserRecordingStartedAt) / 1000
+        : data.recording_duration_seconds;
+      els.recordingDuration.textContent = formatDuration(browserDuration);
       els.location.textContent = data.location_name || `${data.lat}, ${data.lon}`;
       els.locationAttribution.hidden = data.location_source !== "nominatim";
-      els.inputDevice.textContent = data.input_device?.name || "-";
       els.originalSize.textContent = formatMb(data.original_recording_mb);
       els.analysisSize.textContent = formatMb(data.analysis_recording_mb);
       els.uploadState.textContent = data.upload_running ? `Bezig: ${data.upload_name}` : "Geen";
-      const browserParts = [];
-      if (browserRecordingActive) browserParts.push("opname actief");
-      if (data.browser_live_processing) browserParts.push("analyseren");
-      if (data.browser_live_pending) browserParts.push(`wachtrij: ${data.browser_live_pending}`);
-      els.browserState.textContent = browserParts.length ? browserParts.join(" · ") : "Geen";
       els.recording.innerHTML = data.recording_url
         ? `<a href="${data.recording_url}">${data.recording_name}</a>`
         : `${String(data.recording_format || "").toUpperCase()} na stoppen`;
@@ -534,7 +537,10 @@ INDEX_HTML = """
     }
 
     function browserAudioExtension(mimeType) {
-      return mimeType.includes("webm") ? "webm" : "m4a";
+      if (mimeType.includes("webm")) return "webm";
+      if (mimeType.includes("ogg")) return "ogg";
+      if (mimeType.includes("wav")) return "wav";
+      return "m4a";
     }
 
     async function uploadBrowserChunk(blob, mimeType) {
@@ -568,7 +574,79 @@ INDEX_HTML = """
       if (browserRecorder?.state === "recording") browserRecorder.stop();
     }
 
+    function needsPcmBrowserCapture() {
+      return /iPad|iPhone|iPod/.test(navigator.userAgent);
+    }
+
+    function wavBlobFromChunks(chunks, sampleRate) {
+      const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+      const buffer = new ArrayBuffer(44 + length * 2);
+      const view = new DataView(buffer);
+      const writeText = (offset, value) => [...value].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+      writeText(0, "RIFF");
+      view.setUint32(4, 36 + length * 2, true);
+      writeText(8, "WAVEfmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeText(36, "data");
+      view.setUint32(40, length * 2, true);
+      let offset = 44;
+      for (const chunk of chunks) {
+        for (const sample of chunk) {
+          const value = Math.max(-1, Math.min(1, sample));
+          view.setInt16(offset, value < 0 ? value * 32768 : value * 32767, true);
+          offset += 2;
+        }
+      }
+      return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    function uploadPcmSegment() {
+      if (!browserPcmChunks.length) return;
+      const chunks = browserPcmChunks;
+      browserPcmChunks = [];
+      uploadBrowserChunk(wavBlobFromChunks(chunks, browserAudioContext.sampleRate), "audio/wav");
+    }
+
+    async function startPcmBrowserCapture() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) throw new Error("Deze browser kan geen veilige microfoonopname maken.");
+      browserAudioContext = new AudioContextClass();
+      await browserAudioContext.resume();
+      browserAudioSource = browserAudioContext.createMediaStreamSource(browserStream);
+      browserAudioProcessor = browserAudioContext.createScriptProcessor(4096, 1, 1);
+      browserSilentGain = browserAudioContext.createGain();
+      browserSilentGain.gain.value = 0;
+      browserAudioProcessor.addEventListener("audioprocess", (event) => {
+        browserPcmChunks.push(event.inputBuffer.getChannelData(0).slice());
+      });
+      browserAudioSource.connect(browserAudioProcessor);
+      browserAudioProcessor.connect(browserSilentGain);
+      browserSilentGain.connect(browserAudioContext.destination);
+      browserPcmTimer = window.setInterval(uploadPcmSegment, browserSegmentMilliseconds);
+    }
+
+    function stopPcmBrowserCapture() {
+      window.clearInterval(browserPcmTimer);
+      browserPcmTimer = null;
+      uploadPcmSegment();
+      browserAudioSource?.disconnect();
+      browserAudioProcessor?.disconnect();
+      browserSilentGain?.disconnect();
+      browserAudioContext?.close();
+      browserAudioSource = null;
+      browserAudioProcessor = null;
+      browserSilentGain = null;
+      browserAudioContext = null;
+    }
+
     function finishBrowserMicrophone() {
+      stopPcmBrowserCapture();
       browserStream?.getTracks().forEach((track) => track.stop());
       browserStream = null;
       browserRecorder = null;
@@ -599,14 +677,19 @@ INDEX_HTML = """
     }
 
     async function startBrowserMicrophone() {
-      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      if (!navigator.mediaDevices?.getUserMedia || (!window.MediaRecorder && !needsPcmBrowserCapture())) {
         throw new Error("Deze browser ondersteunt geen opname via de microfoon.");
       }
       browserStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       });
       browserRecordingActive = true;
-      startBrowserSegment();
+      browserRecordingStartedAt = Date.now();
+      if (needsPcmBrowserCapture()) {
+        await startPcmBrowserCapture();
+      } else {
+        startBrowserSegment();
+      }
       els.browserStart.disabled = true;
       els.browserStop.disabled = false;
       setMessage("Browsermicrofoon actief; elke 0,3 seconden wordt de analyse vernieuwd.");
@@ -620,7 +703,9 @@ INDEX_HTML = """
         browserStream?.getTracks().forEach((track) => track.stop());
         browserStream = null;
         browserRecorder = null;
+        stopPcmBrowserCapture();
         browserRecordingActive = false;
+        browserRecordingStartedAt = null;
         setMessage(error.message, true);
       }
     });
@@ -637,6 +722,14 @@ INDEX_HTML = """
     function formatMb(value) {
       if (value === null || value === undefined) return "-";
       return `${Number(value).toFixed(2)} MB`;
+    }
+
+    function formatDuration(value) {
+      if (value === null || value === undefined) return "-";
+      const totalSeconds = Math.max(0, Math.floor(Number(value)));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${minutes}:${String(seconds).padStart(2, "0")}`;
     }
 
     function escapeHtml(value) {
@@ -793,6 +886,7 @@ INDEX_HTML = """
       uploadAudioFile();
     });
     setInterval(refreshLiveSpectrogram, 250);
+    setInterval(refreshStatus, 1000);
 
     const events = new EventSource("/events");
     events.addEventListener("status", (event) => {
@@ -1347,6 +1441,7 @@ class RecorderService:
         self._browser_analysis_bytes: int | None = None
         self._browser_samples = np.array([], dtype=np.int16)
         self._browser_last_chunk_at: datetime | None = None
+        self._browser_session_started_at: datetime | None = None
         self._browser_detection_last_published: dict[str, datetime] = {}
         self._ring = SampleRing(SAMPLE_RATE, RING_BUFFER_SECONDS)
 
@@ -1377,6 +1472,7 @@ class RecorderService:
             self._browser_analysis_bytes = None
             self._browser_samples = np.array([], dtype=np.int16)
             self._browser_last_chunk_at = None
+            self._browser_session_started_at = None
             self._browser_detection_last_published = {}
             temp_name = self._session_started_at.strftime("%Y%m%d-%H%M%S-full-record.tmp.wav")
             self._recording_temp_path = unique_path(RECORDINGS_DIR, temp_name)
@@ -1432,6 +1528,9 @@ class RecorderService:
             browser_live_pending = self._browser_chunk_queue.qsize()
             browser_original_bytes = self._browser_original_bytes
             browser_analysis_bytes = self._browser_analysis_bytes
+            browser_session_started_at = self._browser_session_started_at
+            browser_last_chunk_at = self._browser_last_chunk_at
+            session_started_at = self._session_started_at
         visible_recording_path = recording_path if recording_path and recording_path.exists() else None
         temp_size = file_size_bytes(recording_temp_path)
         wav_before_compression_bytes = pre_compression_bytes or temp_recording_bytes or temp_size
@@ -1443,6 +1542,12 @@ class RecorderService:
             original_recording_bytes = wav_before_compression_bytes
             analysis_recording_bytes = final_compressed_bytes
         visible_input_device = input_device or default_input_device_info()
+        if running and session_started_at:
+            recording_duration_seconds = (datetime.now() - session_started_at).total_seconds()
+        elif browser_session_started_at and browser_last_chunk_at:
+            recording_duration_seconds = (browser_last_chunk_at - browser_session_started_at).total_seconds()
+        else:
+            recording_duration_seconds = None
 
         return {
             "running": running,
@@ -1457,6 +1562,7 @@ class RecorderService:
             "recording_format": FULL_RECORD_FORMAT,
             "recording_name": visible_recording_path.name if visible_recording_path else None,
             "recording_url": f"/recordings/{visible_recording_path.name}" if visible_recording_path else None,
+            "recording_duration_seconds": round(recording_duration_seconds, 1) if recording_duration_seconds is not None else None,
             "wav_before_compression_bytes": wav_before_compression_bytes,
             "wav_before_compression_mb": bytes_to_mb(wav_before_compression_bytes),
             "compressed_recording_bytes": final_compressed_bytes,
@@ -1722,6 +1828,7 @@ class RecorderService:
                 or (received_at - self._browser_last_chunk_at).total_seconds() > 2
             ):
                 self._browser_samples = np.array([], dtype=np.int16)
+                self._browser_session_started_at = received_at
                 self._browser_detection_last_published = {}
             self._browser_last_chunk_at = received_at
             self._browser_live_error = None
@@ -1787,7 +1894,6 @@ class RecorderService:
                 message = f"Browseranalyse mislukt: {exc}"
                 with self._lock:
                     self._browser_live_error = message
-                self.broker.publish("status", {"message": message, "level": "error"})
             finally:
                 job.upload_path.unlink(missing_ok=True)
                 analysis_wav_path.unlink(missing_ok=True)
@@ -1884,8 +1990,8 @@ def api_live_chunk() -> tuple[Response, int] | Response:
 
     original_name = secure_filename(uploaded_file.filename)
     extension = Path(original_name).suffix.lower()
-    if extension not in {".webm", ".mp4", ".m4a", ".ogg"}:
-        return jsonify({"ok": False, "error": "Browseraudio moet WebM, M4A, MP4 of Ogg zijn."}), 400
+    if extension not in {".webm", ".mp4", ".m4a", ".ogg", ".wav"}:
+        return jsonify({"ok": False, "error": "Browseraudio moet WebM, M4A, MP4, Ogg of WAV zijn."}), 400
     if request.content_length and request.content_length > MAX_LIVE_CHUNK_BYTES + 64 * 1024:
         return jsonify({"ok": False, "error": "Browserfragment is te groot."}), 413
 
