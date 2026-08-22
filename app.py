@@ -415,6 +415,12 @@ INDEX_HTML = """
       </div>
     </header>
 
+    <section class="panel" style="margin-bottom: 16px;">
+      <h2>Live audiogram</h2>
+      <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
+      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
+    </section>
+
     <section class="toolbar">
       <div class="browser-controls">
         <button id="browserStart" class="primary">Start</button>
@@ -438,12 +444,6 @@ INDEX_HTML = """
             <li class="empty">Nog geen detecties.</li>
           </ol>
         </div>
-    </section>
-
-    <section class="panel" style="margin-bottom: 16px;">
-      <h2>Live audiogram</h2>
-      <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
-      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
     </section>
 
     <section class="panel" style="margin-bottom: 16px;">
