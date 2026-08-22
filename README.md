@@ -99,7 +99,7 @@ Je kunt instellingen via environment variables aanpassen:
 export BIRDNET_LAT=52.3702
 export BIRDNET_LON=4.8952
 export BIRDNET_LOCATION_NAME="Amsterdam"
-export BIRDNET_MIN_CONFIDENCE=0.60
+export BIRDNET_MIN_CONFIDENCE=0.70
 export BIRDNET_MODEL_VERSION=2.4
 export BIRDNET_FULL_RECORD_FORMAT=mp3
 export BIRDNET_FULL_RECORD_MP3_BITRATE=128k
@@ -111,7 +111,7 @@ python app.py
 
 `Analyzer` uit `birdnetlib` gebruikt het BirdNET-Analyzer model, niet de oude Lite-analyzer. De standaardlocatie staat op het geografisch midden van Nederland; vul je eigen coördinaten in voor betere filtering. Met `BIRDNET_LOCATION_NAME` stel je de zichtbare plaatsnaam expliciet in. Zonder deze instelling wordt de plaatsnaam eenmalig opgezocht op basis van de ingestelde coördinaten en lokaal gecachet.
 
-De schuifregelaar **Min. zekerheid** in de webinterface werkt van 10% tot 95%, geldt voor alle bezoekers van dezelfde app en wordt op de server bewaard voor een volgende herstart.
+De standaard minimale zekerheid is 70%. Pas `BIRDNET_MIN_CONFIDENCE` alleen aan als je bewust meer of minder strenge detecties wilt.
 
 Voor de volledige sessie-opname kun je `BIRDNET_FULL_RECORD_FORMAT` instellen op `mp3`, `m4a`, `mp4` of `wav`. `mp4` wordt als audio-only `.m4a` opgeslagen, omdat dat voor audio-opnames het gebruikelijke MP4-containerformaat is. Detectiefragmenten blijven WAV, zodat ze zonder kwaliteitsverlies direct opnieuw geanalyseerd kunnen worden.
 
@@ -210,7 +210,6 @@ http://127.0.0.1:5055/api/devices
 | --- | --- |
 | `/` | Webinterface |
 | `/api/status` | Huidige opname- en applicatiestatus |
-| `/api/settings` | Stel tijdens gebruik de minimale zekerheid in (10–95%) |
 | `/api/devices` | Beschikbare audioapparaten |
 | `/api/start` | Live opname starten |
 | `/api/stop` | Live opname stoppen |
