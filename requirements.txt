@@ -1,0 +1,8 @@
+Flask>=3.0
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8
+sounddevice>=0.5
+birdnetlib>=0.18
+librosa>=0.10
+tensorflow>=2.16
