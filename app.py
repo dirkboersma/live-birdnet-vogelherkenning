@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import numpy as np
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, make_response, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 try:
@@ -311,7 +311,14 @@ INDEX_HTML = """
       border-bottom: 1px solid var(--line);
     }
     .detection-time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
-    .detection-name { font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
+    .detection-name {
+      min-width: 0;
+      font-size: 18px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .detection-meta { color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
     .detection-meta a { color: var(--accent); font-weight: 700; text-decoration: none; }
     .browser-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -441,13 +448,7 @@ INDEX_HTML = """
 
     <section class="panel" style="margin-bottom: 16px;">
       <h2>Wat gebeurt hier?</h2>
-      <p>De browser stuurt elke 0,3 seconden een kort audiofragment. De app voegt die samen tot een doorlopend venster van drie seconden. BirdNET vergelijkt daarin het geluidspatroon met vogelsoorten die rond Beek (Ubbergen) kunnen voorkomen. Alleen voorspellingen met minstens 70% zekerheid verschijnen als detectie. De opnamefragmenten worden na analyse verwijderd.</p>
-      <details style="margin-top: 12px;">
-        <summary>Lokale microfoon van de server</summary>
-        <p style="margin: 8px 0;">Alleen voor gebruik op de computer waarop de app draait.</p>
-        <button id="start">Start lokale opname</button>
-        <button id="stop" class="warning" disabled>Stop lokale opname</button>
-      </details>
+      <p>De browser stuurt elke 0,3 seconden een kort audiofragment. De app voegt die samen tot een doorlopend venster van drie seconden. BirdNET vergelijkt daarin het geluidspatroon met vogelsoorten die op die locatie kunnen voorkomen. Alleen voorspellingen met minstens 70% zekerheid verschijnen als detectie. De opnamefragmenten worden na analyse verwijderd.</p>
     </section>
 
     <section class="status">
@@ -458,7 +459,6 @@ INDEX_HTML = """
       <div class="metric"><b>Originele opname</b><span id="originalSize">-</span></div>
       <div class="metric"><b>Analyse-opname</b><span id="analysisSize">-</span></div>
       <div class="metric"><b>Uploadanalyse</b><span id="uploadState">-</span></div>
-      <div class="metric"><b>Locatie</b><span id="location">-</span><small id="locationAttribution" hidden><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap-bijdragers</a></small></div>
     </section>
 
   </main>
@@ -467,8 +467,6 @@ INDEX_HTML = """
     const els = {
       browserStart: document.querySelector("#browserStart"),
       browserStop: document.querySelector("#browserStop"),
-      start: document.querySelector("#start"),
-      stop: document.querySelector("#stop"),
       uploadForm: document.querySelector("#uploadForm"),
       uploadFile: document.querySelector("#uploadFile"),
       uploadButton: document.querySelector("#uploadButton"),
@@ -480,8 +478,6 @@ INDEX_HTML = """
       originalSize: document.querySelector("#originalSize"),
       analysisSize: document.querySelector("#analysisSize"),
       uploadState: document.querySelector("#uploadState"),
-      location: document.querySelector("#location"),
-      locationAttribution: document.querySelector("#locationAttribution"),
       detections: document.querySelector("#detections"),
       detectionCount: document.querySelector("#detectionCount"),
       detectionPanel: document.querySelector(".detection-panel"),
@@ -557,16 +553,12 @@ INDEX_HTML = """
         ? (Date.now() - browserRecordingStartedAt) / 1000
         : data.recording_duration_seconds;
       els.recordingDuration.textContent = formatDuration(browserDuration);
-      els.location.textContent = data.location_name || `${data.lat}, ${data.lon}`;
-      els.locationAttribution.hidden = data.location_source !== "nominatim";
       els.originalSize.textContent = formatMb(data.original_recording_mb);
       els.analysisSize.textContent = formatMb(data.analysis_recording_mb);
       els.uploadState.textContent = data.upload_running ? `Bezig: ${data.upload_name}` : "Geen";
       els.recording.innerHTML = data.recording_url
         ? `<a href="${data.recording_url}">${data.recording_name}</a>`
         : `${String(data.recording_format || "").toUpperCase()} na stoppen`;
-      els.start.disabled = data.running;
-      els.stop.disabled = !data.running;
       if (data.error) setMessage(data.error, true);
     }
 
@@ -895,37 +887,14 @@ INDEX_HTML = """
       const time = Number.isNaN(detectedAt.getTime())
         ? escapeHtml(item.detected_at)
         : detectedAt.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      const clipName = escapeHtml(item.clip_name);
       row.innerHTML = `
         <time class="detection-time">${time}</time>
         <strong class="detection-name">${birdName}</strong>
-        <span class="detection-meta">${confidence}%${item.clip_url ? ` · <a href="${item.clip_url}">${clipName}</a>` : ""}</span>
+        <span class="detection-meta">${confidence}%${item.clip_url ? ` · <a href="${item.clip_url}" aria-label="Beluister ${birdName}">Luister</a>` : ""}</span>
       `;
       els.detections.prepend(row);
       els.detectionCount.textContent = `${els.detections.children.length} totaal`;
     }
-
-    els.start.addEventListener("click", async () => {
-      setMessage("Opname wordt gestart...");
-      try {
-        const data = await postJson("/api/start");
-        setMessage(data.message || "Opname gestart.");
-      } catch (error) {
-        setMessage(error.message, true);
-      }
-      refreshStatus();
-    });
-
-    els.stop.addEventListener("click", async () => {
-      setMessage("Opname wordt gestopt...");
-      try {
-        const data = await postJson("/api/stop");
-        setMessage(data.message || "Opname gestopt.");
-      } catch (error) {
-        setMessage(error.message, true);
-      }
-      refreshStatus();
-    });
 
     els.detectionToggle.addEventListener("click", () => {
       const expanded = els.detectionPanel.classList.toggle("is-expanded");
@@ -1994,8 +1963,10 @@ recorder = RecorderService(broker, birdnet_service)
 
 
 @app.get("/")
-def index() -> str:
-    return INDEX_HTML
+def index() -> Response:
+    response = make_response(INDEX_HTML)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/api/start")
