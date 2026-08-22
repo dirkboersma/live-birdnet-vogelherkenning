@@ -1,12 +1,12 @@
 # Live BirdNET vogelherkenning
 
-Een lokale Flask-webapp voor het herkennen van vogelgeluiden via een microfoon. De app gebruikt [BirdNET](https://github.com/birdnet-team/BirdNET-Analyzer) voor de analyse en toont detecties, confidence-scores, audiofragmenten en spectrogrammen in een eenvoudige webinterface.
+Een Flask-webapp voor het herkennen van vogelgeluiden via een browsermicrofoon, een lokale microfoon of een geüpload audiobestand. De app gebruikt [BirdNET](https://github.com/birdnet-team/BirdNET-Analyzer) voor de analyse en toont detecties, confidence-scores, audiofragmenten en spectrogrammen in een eenvoudige webinterface.
 
-De applicatie is bedoeld voor lokaal gebruik en onderzoek. Een detectie is een modelvoorspelling en geen gegarandeerde soortbepaling.
+De applicatie is bedoeld voor onderzoek en kleinschalig gebruik. Een detectie is een modelvoorspelling en geen gegarandeerde soortbepaling.
 
 ## Mogelijkheden
 
-- Live audio analyseren in blokken van drie seconden.
+- Browsermicrofoon live analyseren in blokken van drie seconden.
 - Vogelgeluiden filteren op geografische locatie en minimale confidence.
 - De volledige sessie lokaal opslaan als MP3, M4A of WAV.
 - Detectiefragmenten en spectrogrammen lokaal bewaren.
@@ -15,7 +15,7 @@ De applicatie is bedoeld voor lokaal gebruik en onderzoek. Een detectie is een m
 
 ## Installatie
 
-Gebruik bij voorkeur Python 3.11. De huidige BirdNET-stack is mogelijk niet compatibel met Python 3.14.
+Gebruik bij voorkeur Python 3.11: dat is de versie waarop deze applicatie is getest. De huidige TensorFlow-versies ondersteunen ook Python 3.13, maar controleer de installatie op jouw platform; Python 3.14 wordt momenteel niet ondersteund door deze BirdNET/TensorFlow-stack.
 
 Vereist zijn daarnaast `uv`, `portaudio` en `ffmpeg`. Installeer deze systeemafhankelijkheden via de pakketbeheerder of installer van je besturingssysteem. De eerste installatie en de eerste analyse kunnen extra modelbestanden downloaden.
 
@@ -164,7 +164,26 @@ python app.py
 
 Zonder mapping valt de app terug op de naam die BirdNET teruggeeft.
 
-## Problemen met microfoon
+## Browsermicrofoon en online gebruik
+
+De primaire modus gebruikt de microfoon van de bezoeker in de browser. Elke drie seconden stuurt de browser een compact fragment naar de server: WebM/Opus in Chrome en Firefox waar beschikbaar, met een Safari-geschikte MP4/AAC-terugval. De server heeft `ffmpeg` nodig om deze formaten tijdelijk naar 48 kHz mono WAV om te zetten voor BirdNET. De tijdelijke browserfragmenten worden na analyse verwijderd; alleen detectieclips en spectrogrammen blijven bewaard.
+
+Een browsermicrofoon vereist HTTPS in productie. `localhost` is geschikt voor lokaal testen. De server verwerkt hoogstens twee nog wachtende fragmenten; bij overbelasting slaat de app een live fragment over zodat de resultaten actueel blijven.
+
+### Server starten
+
+Gebruik op een server één Gunicorn-worker; BirdNET laadt zijn model in het geheugen en meerdere workers zouden dat model elk afzonderlijk laden. Installeer ook `ffmpeg` op de server en laat Nginx HTTPS afhandelen en doorsturen naar Gunicorn op `127.0.0.1:5055`.
+
+```bash
+python3.11 -m venv .venv  # gebruik python3.13 als 3.11 niet beschikbaar is
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+gunicorn --workers 1 --threads 4 --bind 127.0.0.1:5055 wsgi:app
+```
+
+Zet dit Gunicorn-commando vervolgens onder de process-manager van de hostingpartij. Publiceer de app alleen achter een HTTPS-domein; de browser vraagt daar bij de eerste start om microfoontoestemming.
+
+## Problemen met lokale microfoon
 
 Geef de gebruikte terminal, editor of applicatie toestemming voor microfoontoegang in de privacy-instellingen van je besturingssysteem:
 
@@ -188,6 +207,7 @@ http://127.0.0.1:5055/api/devices
 | `/api/start` | Live opname starten |
 | `/api/stop` | Live opname stoppen |
 | `/api/upload` | Audiobestand uploaden en analyseren |
+| `/api/live-chunk` | Compact browserfragment uploaden voor live analyse |
 | `/api/spectrogram/latest` | Laatste live spectrogram |
 | `/events` | Live updates via Server-Sent Events |
 

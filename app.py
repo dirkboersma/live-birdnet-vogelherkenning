@@ -55,10 +55,11 @@ RECORDINGS_DIR = DATA_DIR / "recordings"
 CLIPS_DIR = DATA_DIR / "detections"
 SPECTROGRAMS_DIR = DATA_DIR / "spectrograms"
 UPLOADS_DIR = DATA_DIR / "uploads"
+LIVE_CHUNKS_DIR = DATA_DIR / "live-chunks"
 CONFIG_DIR = BASE_DIR / "config"
 DUTCH_NAMES_CSV = CONFIG_DIR / "dutch_names.csv"
 
-for directory in (RECORDINGS_DIR, CLIPS_DIR, SPECTROGRAMS_DIR, UPLOADS_DIR, CONFIG_DIR):
+for directory in (RECORDINGS_DIR, CLIPS_DIR, SPECTROGRAMS_DIR, UPLOADS_DIR, LIVE_CHUNKS_DIR, CONFIG_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -96,7 +97,9 @@ AUDIO_FORMATS = {
 }
 if FULL_RECORD_FORMAT not in AUDIO_FORMATS:
     FULL_RECORD_FORMAT = "mp3"
-ALLOWED_UPLOAD_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".mp4a", ".wav", ".aiff", ".aif"}
+ALLOWED_UPLOAD_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".mp4a", ".wav", ".aiff", ".aif", ".webm", ".ogg"}
+MAX_LIVE_CHUNK_BYTES = env_int("BIRDNET_MAX_LIVE_CHUNK_BYTES", 3 * 1024 * 1024)
+LIVE_CHUNK_QUEUE_SIZE = env_int("BIRDNET_LIVE_CHUNK_QUEUE_SIZE", 2)
 
 # Standaard op het geografisch midden van Nederland. Pas dit lokaal aan voor
 # betere resultaten, bijvoorbeeld: BIRDNET_LAT=52.37 BIRDNET_LON=4.90.
@@ -310,19 +313,30 @@ INDEX_HTML = """
     <header>
       <div>
         <h1>Live vogelgeluiden</h1>
-        <p>Lokale microfoonopname met BirdNET Analyzer-detecties.</p>
+        <p>Herken vogelgeluiden met de microfoon van je browser.</p>
       </div>
     </header>
 
     <section class="toolbar">
-      <button id="start" class="primary">Start opname</button>
-      <button id="stop" class="warning" disabled>Stop opname</button>
+      <button id="browserStart" class="primary">Start browsermicrofoon</button>
+      <button id="browserStop" class="warning" disabled>Stop browsermicrofoon</button>
       <button id="refresh">Ververs status</button>
       <form id="uploadForm" class="upload-form">
         <input id="uploadFile" name="audio_file" type="file" accept=".mp3,.mp4,.m4a,.mp4a,.wav,.aiff,.aif,audio/*">
         <button id="uploadButton" type="submit">Analyseer bestand</button>
       </form>
       <span id="message"></span>
+    </section>
+
+    <section class="panel" style="margin-bottom: 16px;">
+      <h2>Browsermicrofoon</h2>
+      <p>Elke drie seconden verstuurt de browser een compact audiofragment. Chrome en Firefox gebruiken waar mogelijk WebM/Opus; Safari gebruikt een geschikt eigen formaat. De server zet het fragment tijdelijk om voor BirdNET en verwijdert het daarna.</p>
+      <details style="margin-top: 12px;">
+        <summary>Lokale microfoon van de server</summary>
+        <p style="margin: 8px 0;">Alleen voor gebruik op de computer waarop de app draait.</p>
+        <button id="start">Start lokale opname</button>
+        <button id="stop" class="warning" disabled>Stop lokale opname</button>
+      </details>
     </section>
 
     <section class="status">
@@ -333,6 +347,7 @@ INDEX_HTML = """
       <div class="metric"><b>Vóór MP3</b><span id="wavSize">-</span></div>
       <div class="metric"><b>Na MP3</b><span id="compressedSize">-</span></div>
       <div class="metric"><b>Uploadanalyse</b><span id="uploadState">-</span></div>
+      <div class="metric"><b>Browseranalyse</b><span id="browserState">-</span></div>
       <div class="metric"><b>Locatie</b><span id="location">-</span></div>
     </section>
 
@@ -364,6 +379,8 @@ INDEX_HTML = """
 
   <script>
     const els = {
+      browserStart: document.querySelector("#browserStart"),
+      browserStop: document.querySelector("#browserStop"),
       start: document.querySelector("#start"),
       stop: document.querySelector("#stop"),
       refresh: document.querySelector("#refresh"),
@@ -378,6 +395,7 @@ INDEX_HTML = """
       wavSize: document.querySelector("#wavSize"),
       compressedSize: document.querySelector("#compressedSize"),
       uploadState: document.querySelector("#uploadState"),
+      browserState: document.querySelector("#browserState"),
       location: document.querySelector("#location"),
       detections: document.querySelector("#detections"),
       liveSpectrogram: document.querySelector("#liveSpectrogram"),
@@ -386,6 +404,10 @@ INDEX_HTML = """
 
     let hasRows = false;
     let spectrogramRequestInFlight = false;
+    let browserRecorder = null;
+    let browserStream = null;
+    let browserSequence = 0;
+    const browserUploads = new Set();
 
     function setMessage(text, isError = false) {
       els.message.textContent = text || "";
@@ -434,6 +456,10 @@ INDEX_HTML = """
       els.wavSize.textContent = formatMb(data.wav_before_compression_mb);
       els.compressedSize.textContent = formatMb(data.compressed_recording_mb);
       els.uploadState.textContent = data.upload_running ? `Bezig: ${data.upload_name}` : "Geen";
+      const browserParts = [];
+      if (data.browser_live_processing) browserParts.push("analyseren");
+      if (data.browser_live_pending) browserParts.push(`wachtrij: ${data.browser_live_pending}`);
+      els.browserState.textContent = browserParts.length ? browserParts.join(" · ") : "Geen";
       els.recording.innerHTML = data.recording_url
         ? `<a href="${data.recording_url}">${data.recording_name}</a>`
         : `${String(data.recording_format || "").toUpperCase()} na stoppen`;
@@ -441,6 +467,87 @@ INDEX_HTML = """
       els.stop.disabled = !data.running;
       if (data.error) setMessage(data.error, true);
     }
+
+    function browserAudioOptions() {
+      const supportedTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4;codecs=mp4a.40.2",
+        "audio/mp4"
+      ];
+      const mimeType = supportedTypes.find((type) => MediaRecorder.isTypeSupported(type));
+      return mimeType ? { mimeType } : {};
+    }
+
+    function browserAudioExtension(mimeType) {
+      return mimeType.includes("webm") ? "webm" : "m4a";
+    }
+
+    async function uploadBrowserChunk(blob) {
+      if (!blob.size) return;
+      const mimeType = blob.type || browserRecorder?.mimeType || "audio/webm";
+      const extension = browserAudioExtension(mimeType);
+      const formData = new FormData();
+      formData.append("audio_file", blob, `browser-${Date.now()}-${++browserSequence}.${extension}`);
+
+      const task = (async () => {
+        const response = await fetch("/api/live-chunk", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || "Browserfragment kon niet worden verstuurd.");
+        }
+        if (data.message) setMessage(data.message);
+      })();
+      browserUploads.add(task);
+      try {
+        await task;
+      } catch (error) {
+        setMessage(error.message, true);
+      } finally {
+        browserUploads.delete(task);
+      }
+    }
+
+    async function startBrowserMicrophone() {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        throw new Error("Deze browser ondersteunt geen opname via de microfoon.");
+      }
+      browserStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      const options = browserAudioOptions();
+      browserRecorder = new MediaRecorder(browserStream, options);
+      browserRecorder.addEventListener("dataavailable", (event) => uploadBrowserChunk(event.data));
+      browserRecorder.addEventListener("stop", async () => {
+        browserStream?.getTracks().forEach((track) => track.stop());
+        browserStream = null;
+        browserRecorder = null;
+        await Promise.allSettled([...browserUploads]);
+        els.browserStart.disabled = false;
+        els.browserStop.disabled = true;
+        setMessage("Browsermicrofoon gestopt.");
+        refreshStatus();
+      });
+      browserRecorder.start(3000);
+      els.browserStart.disabled = true;
+      els.browserStop.disabled = false;
+      setMessage("Browsermicrofoon actief; elk fragment duurt drie seconden.");
+    }
+
+    els.browserStart.addEventListener("click", async () => {
+      try {
+        await startBrowserMicrophone();
+      } catch (error) {
+        browserStream?.getTracks().forEach((track) => track.stop());
+        browserStream = null;
+        browserRecorder = null;
+        setMessage(error.message, true);
+      }
+    });
+
+    els.browserStop.addEventListener("click", () => {
+      if (browserRecorder && browserRecorder.state !== "inactive") browserRecorder.stop();
+    });
 
     function formatMb(value) {
       if (value === null || value === undefined) return "-";
@@ -1034,6 +1141,12 @@ class AnalysisJob:
     session_started_at: datetime
 
 
+@dataclass
+class BrowserChunkJob:
+    upload_path: Path
+    received_at: datetime
+
+
 class RecorderService:
     def __init__(self, broker: EventBroker, birdnet: BirdNetService) -> None:
         self.broker = broker
@@ -1055,6 +1168,11 @@ class RecorderService:
         self._session_started_at: datetime | None = None
         self._upload_running = False
         self._upload_name: str | None = None
+        self._browser_chunk_queue: queue.Queue[BrowserChunkJob] = queue.Queue(maxsize=LIVE_CHUNK_QUEUE_SIZE)
+        self._browser_chunk_thread = threading.Thread(target=self._browser_chunk_loop, daemon=True)
+        self._browser_chunk_thread.start()
+        self._browser_live_processing = False
+        self._browser_live_error: str | None = None
         self._ring = SampleRing(SAMPLE_RATE, RING_BUFFER_SECONDS)
 
     def start(self) -> dict[str, Any]:
@@ -1128,6 +1246,9 @@ class RecorderService:
             compressed_recording_bytes = self._compressed_recording_bytes
             upload_running = self._upload_running
             upload_name = self._upload_name
+            browser_live_processing = self._browser_live_processing
+            browser_live_error = self._browser_live_error
+            browser_live_pending = self._browser_chunk_queue.qsize()
         visible_recording_path = recording_path if recording_path and recording_path.exists() else None
         temp_size = file_size_bytes(recording_temp_path)
         wav_before_compression_bytes = pre_compression_bytes or temp_recording_bytes or temp_size
@@ -1151,6 +1272,9 @@ class RecorderService:
             "compressed_recording_mb": bytes_to_mb(final_compressed_bytes),
             "upload_running": upload_running,
             "upload_name": upload_name,
+            "browser_live_processing": browser_live_processing,
+            "browser_live_pending": browser_live_pending,
+            "browser_live_error": browser_live_error,
         }
 
     def _recording_loop(self) -> None:
@@ -1387,6 +1511,72 @@ class RecorderService:
                 self._upload_running = False
                 self._upload_name = None
 
+    def start_browser_chunk_analysis(self, upload_path: Path) -> dict[str, Any]:
+        ok, error = self.birdnet.available()
+        if not ok:
+            return {"ok": False, "error": error}
+        with self._lock:
+            if self._running:
+                return {
+                    "ok": False,
+                    "error": "Stop eerst de lokale servermicrofoon voordat je de browsermicrofoon gebruikt.",
+                }
+            self._browser_live_error = None
+        try:
+            self._browser_chunk_queue.put_nowait(BrowserChunkJob(upload_path, datetime.now()))
+        except queue.Full:
+            upload_path.unlink(missing_ok=True)
+            return {
+                "ok": True,
+                "message": "BirdNET is nog bezig; dit browserfragment is overgeslagen.",
+                "skipped": True,
+            }
+        return {"ok": True, "message": "Browserfragment ontvangen."}
+
+    def _browser_chunk_loop(self) -> None:
+        while True:
+            job = self._browser_chunk_queue.get()
+            analysis_wav_path = unique_path(LIVE_CHUNKS_DIR, f"{job.upload_path.stem}-analysis.wav")
+            try:
+                with self._lock:
+                    self._browser_live_processing = True
+                    self._browser_live_error = None
+
+                convert_audio_to_analysis_wav(job.upload_path, analysis_wav_path)
+                samples, sample_rate = read_wav_int16(analysis_wav_path)
+                if sample_rate != SAMPLE_RATE:
+                    raise RuntimeError(f"Onverwachte samplerate na conversie: {sample_rate}")
+                if len(samples) < SAMPLE_RATE:
+                    raise RuntimeError("Browserfragment is korter dan één seconde.")
+
+                analysis_frames = int(ANALYSIS_SECONDS * SAMPLE_RATE)
+                samples = samples[:analysis_frames]
+                if len(samples) < analysis_frames:
+                    samples = np.pad(samples, (0, analysis_frames - len(samples)))
+
+                with self._lock:
+                    self._ring.append(samples)
+                detections = self.birdnet.analyze(int16_to_float32(samples), SAMPLE_RATE, job.received_at)
+                for detection in detections:
+                    start_seconds = float(detection.get("start_time") or 0)
+                    end_seconds = float(detection.get("end_time") or ANALYSIS_SECONDS)
+                    start = max(0, int((start_seconds - PRE_ROLL_SECONDS) * SAMPLE_RATE))
+                    end = min(len(samples), int((end_seconds + POST_ROLL_SECONDS) * SAMPLE_RATE))
+                    clip_samples = samples[start:end]
+                    if len(clip_samples):
+                        detected_at = job.received_at + timedelta(seconds=start_seconds)
+                        self._save_and_publish_detection(detection, clip_samples, detected_at, "browsermicrofoon")
+            except Exception as exc:
+                message = f"Browseranalyse mislukt: {exc}"
+                with self._lock:
+                    self._browser_live_error = message
+                self.broker.publish("status", {"message": message, "level": "error"})
+            finally:
+                job.upload_path.unlink(missing_ok=True)
+                analysis_wav_path.unlink(missing_ok=True)
+                with self._lock:
+                    self._browser_live_processing = False
+
     def _save_and_publish_detection(
         self,
         detection: dict[str, Any],
@@ -1464,6 +1654,33 @@ def api_upload() -> tuple[Response, int] | Response:
     uploaded_file.save(upload_path)
 
     result = recorder.start_upload_analysis(upload_path)
+    status = 200 if result.get("ok") else 409
+    return jsonify(result), status
+
+
+@app.post("/api/live-chunk")
+def api_live_chunk() -> tuple[Response, int] | Response:
+    uploaded_file = request.files.get("audio_file")
+    if uploaded_file is None or not uploaded_file.filename:
+        return jsonify({"ok": False, "error": "Geen browser-audio ontvangen."}), 400
+
+    original_name = secure_filename(uploaded_file.filename)
+    extension = Path(original_name).suffix.lower()
+    if extension not in {".webm", ".mp4", ".m4a", ".ogg"}:
+        return jsonify({"ok": False, "error": "Browseraudio moet WebM, M4A, MP4 of Ogg zijn."}), 400
+    if request.content_length and request.content_length > MAX_LIVE_CHUNK_BYTES + 64 * 1024:
+        return jsonify({"ok": False, "error": "Browserfragment is te groot."}), 413
+
+    upload_name = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-browser{extension}"
+    upload_path = unique_path(LIVE_CHUNKS_DIR, upload_name)
+    uploaded_file.save(upload_path)
+    if upload_path.stat().st_size > MAX_LIVE_CHUNK_BYTES:
+        upload_path.unlink(missing_ok=True)
+        return jsonify({"ok": False, "error": "Browserfragment is te groot."}), 413
+
+    result = recorder.start_browser_chunk_analysis(upload_path)
+    if not result.get("ok"):
+        upload_path.unlink(missing_ok=True)
     status = 200 if result.get("ok") else 409
     return jsonify(result), status
 
