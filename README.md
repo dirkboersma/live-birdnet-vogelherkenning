@@ -1,6 +1,6 @@
 # Live BirdNET vogelherkenning
 
-Een lokale Flask-webapp voor het herkennen van vogelgeluiden via een Mac-microfoon. De app gebruikt [BirdNET](https://github.com/birdnet-team/BirdNET-Analyzer) voor de analyse en toont detecties, confidence-scores, audiofragmenten en spectrogrammen in een eenvoudige webinterface.
+Een lokale Flask-webapp voor het herkennen van vogelgeluiden via een microfoon. De app gebruikt [BirdNET](https://github.com/birdnet-team/BirdNET-Analyzer) voor de analyse en toont detecties, confidence-scores, audiofragmenten en spectrogrammen in een eenvoudige webinterface.
 
 De applicatie is bedoeld voor lokaal gebruik en onderzoek. Een detectie is een modelvoorspelling en geen gegarandeerde soortbepaling.
 
@@ -15,22 +15,38 @@ De applicatie is bedoeld voor lokaal gebruik en onderzoek. Een detectie is een m
 
 ## Installatie
 
-Gebruik bij voorkeur Python 3.11. De globale `python3` op deze Mac is 3.14 en is niet geschikt voor BirdNET.
+Gebruik bij voorkeur Python 3.11. De huidige BirdNET-stack is mogelijk niet compatibel met Python 3.14.
 
-Vereist zijn daarnaast `uv`, Homebrew, `portaudio` en `ffmpeg`. De eerste installatie en de eerste analyse kunnen extra modelbestanden downloaden.
+Vereist zijn daarnaast `uv`, `portaudio` en `ffmpeg`. Installeer deze systeemafhankelijkheden via de pakketbeheerder of installer van je besturingssysteem. De eerste installatie en de eerste analyse kunnen extra modelbestanden downloaden.
+
+Installeer `portaudio` en `ffmpeg` met de voor jouw besturingssysteem geschikte pakketbeheerder. Maak daarna de virtuele omgeving aan:
 
 ```bash
-brew install portaudio ffmpeg
 uv python install 3.11
 uv venv --python 3.11
-source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-Start de app:
+Activeer de omgeving volgens je platform. Gebruik bijvoorbeeld op Unix-systemen:
 
 ```bash
 source .venv/bin/activate
+```
+
+Gebruik in PowerShell:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Installeer daarna de Python-afhankelijkheden:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Activeer de virtuele omgeving zoals hierboven beschreven en start daarna de app:
+
+```bash
 python app.py
 ```
 
@@ -150,10 +166,10 @@ Zonder mapping valt de app terug op de naam die BirdNET teruggeeft.
 
 ## Problemen met microfoon
 
-Geef Terminal of je editor toestemming voor microfoontoegang in macOS:
+Geef de gebruikte terminal, editor of applicatie toestemming voor microfoontoegang in de privacy-instellingen van je besturingssysteem:
 
 ```text
-Systeeminstellingen > Privacy en beveiliging > Microfoon
+Privacy-instellingen > Microfoon
 ```
 
 Bekijk beschikbare audio-apparaten via:
@@ -184,7 +200,7 @@ requirements.txt         Python-afhankelijkheden
 data/                    lokale runtime-output, niet versioneren
 ```
 
-`data/`, `.venv/`, `.env`-bestanden en lokale macOS-bestanden zijn uitgesloten via `.gitignore`. Opnames en uploads worden dus niet naar GitHub gepusht.
+`data/`, `.venv/`, `.env`-bestanden en lokale besturingssysteembestanden zijn uitgesloten via `.gitignore`. Opnames en uploads worden dus niet naar GitHub gepusht.
 
 ## Licentie en externe modellen
 
