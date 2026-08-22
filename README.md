@@ -241,6 +241,8 @@ Met dank aan de makers en maintainers van de volgende projecten:
 - [python-sounddevice](https://python-sounddevice.readthedocs.io/) — toegang tot de microfoon en audioapparaten.
 - [librosa](https://librosa.org/) en [TensorFlow](https://www.tensorflow.org/) — audio-/modelondersteuning binnen de BirdNET-stack.
 - [FFmpeg](https://ffmpeg.org/) — conversie van geüploade bestanden en compressie van sessie-opnames.
+- [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) — gebruikersruimte-terugval voor FFmpeg op servers zonder systeembinary.
+- [audioop-lts](https://pypi.org/project/audioop-lts/) en [audioread](https://github.com/beetbox/audioread) — audiocompatibiliteit voor Python 3.13 en de BirdNET-stack.
 - [uv](https://docs.astral.sh/uv/) — Python-versiebeheer, virtuele omgeving en dependency-installatie.
 
 Controleer voor distributie of commercieel gebruik altijd de actuele licentievoorwaarden van deze externe projecten en de bijbehorende BirdNET-modelbestanden.
