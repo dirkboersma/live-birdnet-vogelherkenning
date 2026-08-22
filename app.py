@@ -226,6 +226,7 @@ INDEX_HTML = """
       flex-wrap: wrap;
       gap: 10px;
       align-items: center;
+      margin-top: 12px;
     }
     input[type="file"] {
       max-width: 260px;
@@ -415,22 +416,17 @@ INDEX_HTML = """
       </div>
     </header>
 
-    <section class="panel" style="margin-bottom: 16px;">
-      <h2>Live audiogram</h2>
-      <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
-      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
-    </section>
-
     <section class="toolbar">
       <div class="browser-controls">
         <button id="browserStart" class="primary">Start</button>
         <button id="browserStop" class="warning" disabled>Stop</button>
       </div>
-      <form id="uploadForm" class="upload-form">
-        <input id="uploadFile" name="audio_file" type="file" accept=".mp3,.mp4,.m4a,.mp4a,.wav,.aiff,.aif,audio/*">
-        <button id="uploadButton" type="submit">Analyseer bestand</button>
-      </form>
-      <span id="message"></span>
+    </section>
+
+    <section class="panel" style="margin-bottom: 16px;">
+      <h2>Live audiogram</h2>
+      <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
+      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
     </section>
 
     <section class="panel detection-panel" style="margin-bottom: 16px;">
@@ -459,6 +455,16 @@ INDEX_HTML = """
       <div class="metric"><b>Originele opname</b><span id="originalSize">-</span></div>
       <div class="metric"><b>Analyse-opname</b><span id="analysisSize">-</span></div>
       <div class="metric"><b>Uploadanalyse</b><span id="uploadState">-</span></div>
+    </section>
+
+    <section class="panel" style="margin-bottom: 16px;">
+      <h2>Analyseer bestand</h2>
+      <p>Upload hier een bestaande audio-opname om die met BirdNET te analyseren.</p>
+      <form id="uploadForm" class="upload-form">
+        <input id="uploadFile" name="audio_file" type="file" accept=".mp3,.mp4,.m4a,.mp4a,.wav,.aiff,.aif,audio/*">
+        <button id="uploadButton" type="submit">Analyseer bestand</button>
+      </form>
+      <span id="message"></span>
     </section>
 
   </main>
