@@ -457,7 +457,11 @@ INDEX_HTML = """
     async function refreshStatus() {
       const response = await fetch("/api/status");
       const data = await response.json();
-      els.state.textContent = data.running ? "Opname actief" : "Gestopt";
+      els.state.textContent = browserRecordingActive
+        ? "Browsermicrofoon actief"
+        : data.running
+          ? "Lokale opname actief"
+          : "Gestopt";
       els.confidence.textContent = `${Math.round(data.min_confidence * 100)}%`;
       els.location.textContent = `${data.lat}, ${data.lon}`;
       els.inputDevice.textContent = data.input_device?.name || "-";
@@ -465,6 +469,7 @@ INDEX_HTML = """
       els.compressedSize.textContent = formatMb(data.compressed_recording_mb);
       els.uploadState.textContent = data.upload_running ? `Bezig: ${data.upload_name}` : "Geen";
       const browserParts = [];
+      if (browserRecordingActive) browserParts.push("opname actief");
       if (data.browser_live_processing) browserParts.push("analyseren");
       if (data.browser_live_pending) browserParts.push(`wachtrij: ${data.browser_live_pending}`);
       els.browserState.textContent = browserParts.length ? browserParts.join(" · ") : "Geen";
@@ -564,6 +569,7 @@ INDEX_HTML = """
       els.browserStart.disabled = true;
       els.browserStop.disabled = false;
       setMessage("Browsermicrofoon actief; elk fragment duurt drie seconden.");
+      refreshStatus();
     }
 
     els.browserStart.addEventListener("click", async () => {
