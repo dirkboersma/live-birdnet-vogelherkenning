@@ -208,7 +208,7 @@ Deze repository bevat de applicatiecode. BirdNET, TensorFlow en de overige depen
 
 ## Credits en gebruikte software
 
-De applicatiecode en integratie zijn gemaakt door [Dirk Boersma](https://github.com/dirkboersma).
+Deze applicatie combineert de onderstaande open-sourceprojecten en libraries:
 
 Met dank aan de makers en maintainers van de volgende projecten:
 
