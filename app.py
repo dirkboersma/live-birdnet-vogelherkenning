@@ -64,11 +64,47 @@ CLIPS_DIR = DATA_DIR / "detections"
 SPECTROGRAMS_DIR = DATA_DIR / "spectrograms"
 UPLOADS_DIR = DATA_DIR / "uploads"
 LIVE_CHUNKS_DIR = DATA_DIR / "live-chunks"
+USAGE_LOG_PATH = DATA_DIR / "log.txt"
 CONFIG_DIR = BASE_DIR / "config"
 DUTCH_NAMES_CSV = CONFIG_DIR / "dutch_names.csv"
 
 for directory in (RECORDINGS_DIR, CLIPS_DIR, SPECTROGRAMS_DIR, UPLOADS_DIR, LIVE_CHUNKS_DIR, CONFIG_DIR):
     directory.mkdir(parents=True, exist_ok=True)
+
+
+class UsageLog:
+    """Kleine, privacyvriendelijke gebruikslog zonder IP-adressen of audio."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+
+    def _append(self, event: str) -> None:
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"{timestamp}\t{event}\n")
+
+    def page_opened(self) -> None:
+        self._append("OPEN")
+
+    def recording_finished(self, duration_seconds: float) -> None:
+        self._append(f"OPNAME\t{duration_seconds:.1f}s")
+
+    def as_text(self) -> str:
+        with self._lock:
+            entries = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+        page_opens = sum(1 for line in entries.splitlines() if "\tOPEN" in line)
+        durations = [float(value) for value in re.findall(r"\tOPNAME\t([0-9.]+)s", entries)]
+        total_seconds = sum(durations)
+        minutes, seconds = divmod(int(total_seconds), 60)
+        summary = (
+            "tjilp gebruikslog\n"
+            f"Paginaopeningen: {page_opens}\n"
+            f"Opnames: {len(durations)}\n"
+            f"Totale opnameduur: {minutes}:{seconds:02d}\n\n"
+        )
+        return summary + entries
 
 
 def env_float(name: str, default: float) -> float:
@@ -165,6 +201,8 @@ INDEX_HTML = """
       height: 52px;
       flex: 0 0 auto;
       color: var(--ink);
+      transform-origin: center;
+      animation: bird-float 2.8s ease-in-out infinite;
     }
     .brand-logo .fill { fill: currentColor; }
     .brand-logo .line {
@@ -173,6 +211,13 @@ INDEX_HTML = """
       stroke-width: 3;
       stroke-linecap: round;
       stroke-linejoin: round;
+    }
+    @keyframes bird-float {
+      0%, 100% { transform: translateY(1px) rotate(-2deg); }
+      50% { transform: translateY(-4px) rotate(2deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .brand-logo { animation: none; }
     }
     h1 {
       margin: 0 0 4px;
@@ -499,6 +544,7 @@ INDEX_HTML = """
     let browserSequence = 0;
     let browserRecordingActive = false;
     let browserRecordingStartedAt = null;
+    let browserSessionLogged = false;
     let browserSegmentTimer = null;
     let browserAudioContext = null;
     let browserAudioSource = null;
@@ -688,7 +734,27 @@ INDEX_HTML = """
       browserAudioContext = null;
     }
 
+    function logBrowserRecordingDuration(useBeacon = false) {
+      if (!browserRecordingStartedAt || browserSessionLogged) return;
+      browserSessionLogged = true;
+      const payload = JSON.stringify({
+        duration_seconds: Math.max(0, (Date.now() - browserRecordingStartedAt) / 1000)
+      });
+      browserRecordingStartedAt = null;
+      if (useBeacon && navigator.sendBeacon) {
+        navigator.sendBeacon("/api/browser-session", new Blob([payload], { type: "application/json" }));
+        return;
+      }
+      fetch("/api/browser-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        keepalive: true
+      }).catch(() => {});
+    }
+
     function finishBrowserMicrophone() {
+      logBrowserRecordingDuration();
       stopPcmBrowserCapture();
       browserStream?.getTracks().forEach((track) => track.stop());
       browserStream = null;
@@ -728,6 +794,7 @@ INDEX_HTML = """
       });
       browserRecordingActive = true;
       browserRecordingStartedAt = Date.now();
+      browserSessionLogged = false;
       if (needsPcmBrowserCapture()) {
         await startPcmBrowserCapture();
       } else {
@@ -760,6 +827,10 @@ INDEX_HTML = """
       } else {
         finishBrowserMicrophone();
       }
+    });
+
+    window.addEventListener("pagehide", () => {
+      if (browserRecordingActive) logBrowserRecordingDuration(true);
     });
 
     function formatMb(value) {
@@ -1966,13 +2037,20 @@ location_resolver = LocationResolver(BIRDNET_LAT, BIRDNET_LON, BIRDNET_LOCATION_
 name_resolver = DutchNameResolver(DUTCH_NAMES_CSV)
 birdnet_service = BirdNetService(name_resolver)
 recorder = RecorderService(broker, birdnet_service)
+usage_log = UsageLog(USAGE_LOG_PATH)
 
 
 @app.get("/")
 def index() -> Response:
+    usage_log.page_opened()
     response = make_response(INDEX_HTML)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.get("/log")
+def log() -> Response:
+    return Response(usage_log.as_text(), content_type="text/plain; charset=utf-8")
 
 
 @app.post("/api/start")
@@ -2039,6 +2117,19 @@ def api_live_chunk() -> tuple[Response, int] | Response:
 @app.get("/api/status")
 def api_status() -> Response:
     return jsonify(recorder.status())
+
+
+@app.post("/api/browser-session")
+def api_browser_session() -> tuple[Response, int] | Response:
+    payload = request.get_json(silent=True) or {}
+    try:
+        duration_seconds = float(payload["duration_seconds"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Ongeldige opnameduur."}), 400
+    if not 0 <= duration_seconds <= 24 * 60 * 60:
+        return jsonify({"ok": False, "error": "Ongeldige opnameduur."}), 400
+    usage_log.recording_finished(duration_seconds)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/devices")

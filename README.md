@@ -209,6 +209,7 @@ http://127.0.0.1:5055/api/devices
 | Endpoint | Functie |
 | --- | --- |
 | `/` | Webinterface |
+| `/log` | Eenvoudige tekstlog met paginaopeningen en opnameduur |
 | `/api/status` | Huidige opname- en applicatiestatus |
 | `/api/devices` | Beschikbare audioapparaten |
 | `/api/start` | Live opname starten |
