@@ -15,7 +15,7 @@ De applicatie is bedoeld voor onderzoek en kleinschalig gebruik. Een detectie is
 
 ## Installatie
 
-Gebruik bij voorkeur Python 3.11: dat is de versie waarop deze applicatie is getest. De huidige TensorFlow-versies ondersteunen ook Python 3.13, maar controleer de installatie op jouw platform; Python 3.14 wordt momenteel niet ondersteund door deze BirdNET/TensorFlow-stack.
+Gebruik bij voorkeur Python 3.11: dat is de versie waarop deze applicatie is getest. De huidige TensorFlow-versies ondersteunen ook Python 3.13; `audioop-lts` uit `requirements.txt` vult daar de uit Python verwijderde audiomodule aan. Python 3.14 wordt momenteel niet ondersteund door deze BirdNET/TensorFlow-stack.
 
 Vereist zijn daarnaast `uv`, `portaudio` en `ffmpeg`. Installeer deze systeemafhankelijkheden via de pakketbeheerder of installer van je besturingssysteem. De eerste installatie en de eerste analyse kunnen extra modelbestanden downloaden.
 
