@@ -166,7 +166,7 @@ Zonder mapping valt de app terug op de naam die BirdNET teruggeeft.
 
 ## Browsermicrofoon en online gebruik
 
-De primaire modus gebruikt de microfoon van de bezoeker in de browser. Elke drie seconden stuurt de browser een compact fragment naar de server: WebM/Opus in Chrome en Firefox waar beschikbaar, met een Safari-geschikte MP4/AAC-terugval. De server heeft `ffmpeg` nodig om deze formaten tijdelijk naar 48 kHz mono WAV om te zetten voor BirdNET. De tijdelijke browserfragmenten worden na analyse verwijderd; alleen detectieclips en spectrogrammen blijven bewaard.
+De primaire modus gebruikt de microfoon van de bezoeker in de browser. Elke drie seconden stuurt de browser een compact fragment naar de server: WebM/Opus in Chrome en Firefox waar beschikbaar, met een Safari-geschikte MP4/AAC-terugval. De server zet deze formaten tijdelijk naar 48 kHz mono WAV om voor BirdNET. Gebruik hiervoor systeem-`ffmpeg`; als dat niet beschikbaar is, installeert `imageio-ffmpeg` uit `requirements.txt` een gebruikersruimte-alternatief. De tijdelijke browserfragmenten worden na analyse verwijderd; alleen detectieclips en spectrogrammen blijven bewaard.
 
 Een browsermicrofoon vereist HTTPS in productie. `localhost` is geschikt voor lokaal testen. De server verwerkt hoogstens twee nog wachtende fragmenten; bij overbelasting slaat de app een live fragment over zodat de resultaten actueel blijven.
 

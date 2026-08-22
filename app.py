@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -16,6 +17,11 @@ from typing import Any
 import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
+
+try:
+    import imageio_ffmpeg
+except Exception:  # pragma: no cover - only used when system FFmpeg is absent
+    imageio_ffmpeg = None
 
 try:
     import matplotlib
@@ -803,7 +809,7 @@ def read_wav_int16(path: Path) -> tuple[np.ndarray, int]:
 
 def convert_audio_to_analysis_wav(input_path: Path, output_path: Path) -> None:
     command = [
-        "ffmpeg",
+        ffmpeg_executable(),
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -830,6 +836,28 @@ def convert_audio_to_analysis_wav(input_path: Path, output_path: Path) -> None:
 def compressed_recording_path(temp_wav_path: Path) -> Path:
     extension = AUDIO_FORMATS[FULL_RECORD_FORMAT]["extension"]
     return temp_wav_path.with_name(temp_wav_path.name.replace(".tmp.wav", f".{extension}"))
+
+
+def ffmpeg_executable() -> str:
+    configured = os.getenv("BIRDNET_FFMPEG")
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.is_file():
+            return str(configured_path)
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+
+    if imageio_ffmpeg is not None:
+        bundled_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        if Path(bundled_ffmpeg).is_file():
+            return bundled_ffmpeg
+
+    raise RuntimeError("FFmpeg ontbreekt. Installeer ffmpeg of imageio-ffmpeg.")
 
 
 def file_size_bytes(path: Path | None) -> int | None:
@@ -880,7 +908,7 @@ def compress_full_recording(temp_wav_path: Path, output_path: Path) -> None:
         codec_args = ["-codec:a", "aac", "-b:a", FULL_RECORD_MP3_BITRATE]
 
     command = [
-        "ffmpeg",
+        ffmpeg_executable(),
         "-y",
         "-hide_banner",
         "-loglevel",
