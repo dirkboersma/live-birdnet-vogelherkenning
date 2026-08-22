@@ -272,6 +272,53 @@ INDEX_HTML = """
       padding: 14px;
       border-bottom: 1px solid var(--line);
     }
+    .detection-panel summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px;
+      cursor: pointer;
+      list-style: none;
+      font-size: 18px;
+      font-weight: 750;
+    }
+    .detection-panel summary::-webkit-details-marker { display: none; }
+    .detection-panel summary::after { content: "Toon alle"; color: var(--muted); font-size: 13px; font-weight: 600; }
+    .detection-panel details[open] summary::after { content: "Toon minder"; }
+    .detection-count { color: var(--muted); font-size: 13px; font-weight: 600; margin-left: auto; }
+    .detection-list-wrap {
+      position: relative;
+      max-height: 220px;
+      overflow: hidden;
+      border-top: 1px solid var(--line);
+    }
+    .detection-panel details[open] .detection-list-wrap { max-height: none; }
+    .detection-panel details:not([open]) .detection-list-wrap::after {
+      content: "";
+      position: absolute;
+      z-index: 1;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      height: 46px;
+      pointer-events: none;
+      background: linear-gradient(to bottom, rgba(255,255,255,0), var(--panel) 88%);
+    }
+    .detection-list { margin: 0; padding: 0; list-style: none; }
+    .detection-item {
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 58px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .detection-time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+    .detection-name { font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
+    .detection-meta { color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
+    .detection-meta a { color: var(--accent); font-weight: 700; text-decoration: none; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -341,6 +388,8 @@ INDEX_HTML = """
       .status { grid-template-columns: 1fr 1fr; }
       th:nth-child(6), td:nth-child(6) { display: none; }
       .spectrogram-live { height: 130px; }
+      .detection-item { grid-template-columns: 64px minmax(0, 1fr) auto; padding: 9px 12px; }
+      .detection-name { font-size: 16px; }
     }
   </style>
 </head>
@@ -372,6 +421,17 @@ INDEX_HTML = """
       <span id="message"></span>
     </section>
 
+    <section class="panel detection-panel" style="margin-bottom: 16px;">
+      <details id="detectionDetails">
+        <summary>Live detecties <span id="detectionCount" class="detection-count"></span></summary>
+        <div class="detection-list-wrap">
+          <ol id="detections" class="detection-list">
+            <li class="empty">Nog geen detecties.</li>
+          </ol>
+        </div>
+      </details>
+    </section>
+
     <section class="panel" style="margin-bottom: 16px;">
       <h2>Live audiogram</h2>
       <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
@@ -400,24 +460,6 @@ INDEX_HTML = """
       <div class="metric"><b>Locatie</b><span id="location">-</span><small id="locationAttribution" hidden><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap-bijdragers</a></small></div>
     </section>
 
-    <section class="panel">
-      <h2>Live detecties</h2>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 160px;">Tijd</th>
-            <th style="width: 128px;">Afbeelding</th>
-            <th style="width: 210px;">Spectrogram</th>
-            <th>Vogelnaam</th>
-            <th style="width: 120px;">Zekerheid</th>
-            <th>Fragment</th>
-          </tr>
-        </thead>
-        <tbody id="detections">
-          <tr><td colspan="6" class="empty">Nog geen detecties.</td></tr>
-        </tbody>
-      </table>
-    </section>
   </main>
 
   <script>
@@ -441,6 +483,7 @@ INDEX_HTML = """
       location: document.querySelector("#location"),
       locationAttribution: document.querySelector("#locationAttribution"),
       detections: document.querySelector("#detections"),
+      detectionCount: document.querySelector("#detectionCount"),
       liveSpectrogram: document.querySelector("#liveSpectrogram"),
       spectrogramState: document.querySelector("#spectrogramState")
     };
@@ -842,20 +885,22 @@ INDEX_HTML = """
         els.detections.innerHTML = "";
         hasRows = true;
       }
-      const row = document.createElement("tr");
+      const row = document.createElement("li");
+      row.className = "detection-item";
       const confidence = Math.round(item.confidence * 1000) / 10;
       const birdName = escapeHtml(item.dutch_name);
-      const detectedAt = escapeHtml(item.detected_at);
+      const detectedAt = new Date(`${item.detected_at.replace(" ", "T")}Z`);
+      const time = Number.isNaN(detectedAt.getTime())
+        ? escapeHtml(item.detected_at)
+        : detectedAt.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       const clipName = escapeHtml(item.clip_name);
       row.innerHTML = `
-        <td>${detectedAt}</td>
-        <td><img class="bird-thumb" src="${birdPlaceholder(item.dutch_name)}" width="100" height="100" alt="${birdName}"></td>
-        <td>${item.spectrogram_url ? `<img class="spectrogram-thumb" src="${item.spectrogram_url}" width="180" height="100" alt="Spectrogram ${birdName}">` : "-"}</td>
-        <td class="bird-name">${birdName}</td>
-        <td>${confidence}%</td>
-        <td>${item.clip_url ? `<a href="${item.clip_url}">${clipName}</a>` : "-"}</td>
+        <time class="detection-time">${time}</time>
+        <strong class="detection-name">${birdName}</strong>
+        <span class="detection-meta">${confidence}%${item.clip_url ? ` · <a href="${item.clip_url}">${clipName}</a>` : ""}</span>
       `;
       els.detections.prepend(row);
+      els.detectionCount.textContent = `${els.detections.children.length} totaal`;
     }
 
     els.start.addEventListener("click", async () => {
