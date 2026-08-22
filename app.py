@@ -407,6 +407,8 @@ INDEX_HTML = """
     let browserRecorder = null;
     let browserStream = null;
     let browserSequence = 0;
+    let browserRecordingActive = false;
+    let browserSegmentTimer = null;
     const browserUploads = new Set();
 
     function setMessage(text, isError = false) {
@@ -483,10 +485,10 @@ INDEX_HTML = """
       return mimeType.includes("webm") ? "webm" : "m4a";
     }
 
-    async function uploadBrowserChunk(blob) {
+    async function uploadBrowserChunk(blob, mimeType) {
       if (!blob.size) return;
-      const mimeType = blob.type || browserRecorder?.mimeType || "audio/webm";
-      const extension = browserAudioExtension(mimeType);
+      const detectedMimeType = blob.type || mimeType || "audio/webm";
+      const extension = browserAudioExtension(detectedMimeType);
       const formData = new FormData();
       formData.append("audio_file", blob, `browser-${Date.now()}-${++browserSequence}.${extension}`);
 
@@ -508,6 +510,42 @@ INDEX_HTML = """
       }
     }
 
+    function stopBrowserSegment() {
+      window.clearTimeout(browserSegmentTimer);
+      browserSegmentTimer = null;
+      if (browserRecorder?.state === "recording") browserRecorder.stop();
+    }
+
+    function finishBrowserMicrophone() {
+      browserStream?.getTracks().forEach((track) => track.stop());
+      browserStream = null;
+      browserRecorder = null;
+      Promise.allSettled([...browserUploads]).then(() => {
+        els.browserStart.disabled = false;
+        els.browserStop.disabled = true;
+        setMessage("Browsermicrofoon gestopt.");
+        refreshStatus();
+      });
+    }
+
+    function startBrowserSegment() {
+      if (!browserRecordingActive || !browserStream) return;
+      const segmentRecorder = new MediaRecorder(browserStream, browserAudioOptions());
+      browserRecorder = segmentRecorder;
+      const mimeType = segmentRecorder.mimeType;
+      segmentRecorder.addEventListener("dataavailable", (event) => uploadBrowserChunk(event.data, mimeType));
+      segmentRecorder.addEventListener("stop", () => {
+        if (browserRecorder === segmentRecorder) browserRecorder = null;
+        if (browserRecordingActive) {
+          window.setTimeout(startBrowserSegment, 0);
+        } else {
+          finishBrowserMicrophone();
+        }
+      });
+      segmentRecorder.start();
+      browserSegmentTimer = window.setTimeout(stopBrowserSegment, 3000);
+    }
+
     async function startBrowserMicrophone() {
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
         throw new Error("Deze browser ondersteunt geen opname via de microfoon.");
@@ -515,20 +553,8 @@ INDEX_HTML = """
       browserStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       });
-      const options = browserAudioOptions();
-      browserRecorder = new MediaRecorder(browserStream, options);
-      browserRecorder.addEventListener("dataavailable", (event) => uploadBrowserChunk(event.data));
-      browserRecorder.addEventListener("stop", async () => {
-        browserStream?.getTracks().forEach((track) => track.stop());
-        browserStream = null;
-        browserRecorder = null;
-        await Promise.allSettled([...browserUploads]);
-        els.browserStart.disabled = false;
-        els.browserStop.disabled = true;
-        setMessage("Browsermicrofoon gestopt.");
-        refreshStatus();
-      });
-      browserRecorder.start(3000);
+      browserRecordingActive = true;
+      startBrowserSegment();
       els.browserStart.disabled = true;
       els.browserStop.disabled = false;
       setMessage("Browsermicrofoon actief; elk fragment duurt drie seconden.");
@@ -541,12 +567,18 @@ INDEX_HTML = """
         browserStream?.getTracks().forEach((track) => track.stop());
         browserStream = null;
         browserRecorder = null;
+        browserRecordingActive = false;
         setMessage(error.message, true);
       }
     });
 
     els.browserStop.addEventListener("click", () => {
-      if (browserRecorder && browserRecorder.state !== "inactive") browserRecorder.stop();
+      browserRecordingActive = false;
+      if (browserRecorder?.state === "recording") {
+        stopBrowserSegment();
+      } else {
+        finishBrowserMicrophone();
+      }
     });
 
     function formatMb(value) {
@@ -786,7 +818,13 @@ def convert_audio_to_analysis_wav(input_path: Path, output_path: Path) -> None:
         "s16",
         str(output_path),
     ]
-    subprocess.run(command, check=True)
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip().splitlines()
+        if detail:
+            print(f"FFmpeg-conversiefout: {detail[-1]}")
+        raise RuntimeError("FFmpeg kon dit audiofragment niet lezen.") from exc
 
 
 def compressed_recording_path(temp_wav_path: Path) -> Path:
