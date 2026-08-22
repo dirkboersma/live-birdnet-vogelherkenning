@@ -92,8 +92,8 @@ MIN_CONFIDENCE = env_float("BIRDNET_MIN_CONFIDENCE", 0.60)
 PRE_ROLL_SECONDS = env_float("BIRDNET_PRE_ROLL_SECONDS", 1.0)
 POST_ROLL_SECONDS = env_float("BIRDNET_POST_ROLL_SECONDS", 1.0)
 RING_BUFFER_SECONDS = env_float("BIRDNET_RING_BUFFER_SECONDS", 90.0)
-LIVE_SPECTROGRAM_SECONDS = env_float("BIRDNET_LIVE_SPECTROGRAM_SECONDS", 5.0)
-SPECTROGRAM_MAX_FREQ = env_float("BIRDNET_SPECTROGRAM_MAX_FREQ", 12_000.0)
+LIVE_SPECTROGRAM_SECONDS = env_float("BIRDNET_LIVE_SPECTROGRAM_SECONDS", 2.5)
+SPECTROGRAM_MAX_FREQ = env_float("BIRDNET_SPECTROGRAM_MAX_FREQ", 10_000.0)
 BIRDNET_MODEL_VERSION = os.getenv("BIRDNET_MODEL_VERSION", "2.4")
 FULL_RECORD_FORMAT = os.getenv("BIRDNET_FULL_RECORD_FORMAT", "mp3").lower()
 FULL_RECORD_MP3_BITRATE = os.getenv("BIRDNET_FULL_RECORD_MP3_BITRATE", "128k")
@@ -311,7 +311,7 @@ INDEX_HTML = """
     }
     .spectrogram-live {
       width: 100%;
-      height: 260px;
+      height: 150px;
       display: block;
       background: #101010;
     }
@@ -340,7 +340,7 @@ INDEX_HTML = """
       button { flex: 1; }
       .status { grid-template-columns: 1fr 1fr; }
       th:nth-child(6), td:nth-child(6) { display: none; }
-      .spectrogram-live { height: 190px; }
+      .spectrogram-live { height: 130px; }
     }
   </style>
 </head>
@@ -374,7 +374,7 @@ INDEX_HTML = """
 
     <section class="panel" style="margin-bottom: 16px;">
       <h2>Browsermicrofoon</h2>
-      <p>Elke drie seconden verstuurt de browser een compact audiofragment. Chrome en Firefox gebruiken waar mogelijk WebM/Opus; Safari gebruikt een geschikt eigen formaat. De server zet het fragment tijdelijk om voor BirdNET en verwijdert het daarna.</p>
+      <p>De browser stuurt elke 0,3 seconden een compact audiofragment. BirdNET analyseert telkens het meest recente venster van drie seconden. Chrome en Firefox gebruiken waar mogelijk WebM/Opus; Safari gebruikt een geschikt eigen formaat. De server zet het fragment tijdelijk om voor BirdNET en verwijdert het daarna.</p>
       <details style="margin-top: 12px;">
         <summary>Lokale microfoon van de server</summary>
         <p style="margin: 8px 0;">Alleen voor gebruik op de computer waarop de app draait.</p>
@@ -398,7 +398,7 @@ INDEX_HTML = """
     <section class="panel" style="margin-bottom: 16px;">
       <h2>Live spectrogram</h2>
       <div id="spectrogramState" class="panel-note">Start de opname om live frequenties te zien.</div>
-      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="260"></canvas>
+      <canvas id="liveSpectrogram" class="spectrogram-live" width="900" height="160"></canvas>
     </section>
 
     <section class="panel">
@@ -455,6 +455,7 @@ INDEX_HTML = """
     let browserRecordingActive = false;
     let browserSegmentTimer = null;
     const browserUploads = new Set();
+    const browserSegmentMilliseconds = 300;
 
     function setMessage(text, isError = false) {
       els.message.textContent = text || "";
@@ -594,7 +595,7 @@ INDEX_HTML = """
         }
       });
       segmentRecorder.start();
-      browserSegmentTimer = window.setTimeout(stopBrowserSegment, 3000);
+      browserSegmentTimer = window.setTimeout(stopBrowserSegment, browserSegmentMilliseconds);
     }
 
     async function startBrowserMicrophone() {
@@ -608,7 +609,7 @@ INDEX_HTML = """
       startBrowserSegment();
       els.browserStart.disabled = true;
       els.browserStop.disabled = false;
-      setMessage("Browsermicrofoon actief; elk fragment duurt drie seconden.");
+      setMessage("Browsermicrofoon actief; elke 0,3 seconden wordt de analyse vernieuwd.");
       refreshStatus();
     }
 
@@ -791,7 +792,7 @@ INDEX_HTML = """
       event.preventDefault();
       uploadAudioFile();
     });
-    setInterval(refreshLiveSpectrogram, 500);
+    setInterval(refreshLiveSpectrogram, 250);
 
     const events = new EventSource("/events");
     events.addEventListener("status", (event) => {
@@ -1344,6 +1345,9 @@ class RecorderService:
         self._browser_live_error: str | None = None
         self._browser_original_bytes: int | None = None
         self._browser_analysis_bytes: int | None = None
+        self._browser_samples = np.array([], dtype=np.int16)
+        self._browser_last_chunk_at: datetime | None = None
+        self._browser_detection_last_published: dict[str, datetime] = {}
         self._ring = SampleRing(SAMPLE_RATE, RING_BUFFER_SECONDS)
 
     def start(self) -> dict[str, Any]:
@@ -1371,6 +1375,9 @@ class RecorderService:
             self._compressed_recording_bytes = None
             self._browser_original_bytes = None
             self._browser_analysis_bytes = None
+            self._browser_samples = np.array([], dtype=np.int16)
+            self._browser_last_chunk_at = None
+            self._browser_detection_last_published = {}
             temp_name = self._session_started_at.strftime("%Y%m%d-%H%M%S-full-record.tmp.wav")
             self._recording_temp_path = unique_path(RECORDINGS_DIR, temp_name)
             self._recording_path = compressed_recording_path(self._recording_temp_path)
@@ -1709,12 +1716,20 @@ class RecorderService:
                     "ok": False,
                     "error": "Stop eerst de lokale servermicrofoon voordat je de browsermicrofoon gebruikt.",
                 }
+            received_at = datetime.now()
+            if (
+                self._browser_last_chunk_at is None
+                or (received_at - self._browser_last_chunk_at).total_seconds() > 2
+            ):
+                self._browser_samples = np.array([], dtype=np.int16)
+                self._browser_detection_last_published = {}
+            self._browser_last_chunk_at = received_at
             self._browser_live_error = None
             self._browser_original_bytes = file_size_bytes(upload_path)
             self._browser_analysis_bytes = None
         try:
             self._browser_chunk_queue.put_nowait(
-                BrowserChunkJob(upload_path, datetime.now(), file_size_bytes(upload_path) or 0)
+                BrowserChunkJob(upload_path, received_at, file_size_bytes(upload_path) or 0)
             )
         except queue.Full:
             upload_path.unlink(missing_ok=True)
@@ -1741,25 +1756,32 @@ class RecorderService:
                 samples, sample_rate = read_wav_int16(analysis_wav_path)
                 if sample_rate != SAMPLE_RATE:
                     raise RuntimeError(f"Onverwachte samplerate na conversie: {sample_rate}")
-                if len(samples) < SAMPLE_RATE:
-                    raise RuntimeError("Browserfragment is korter dan één seconde.")
+                if len(samples) < 1024:
+                    raise RuntimeError("Browserfragment bevat te weinig audio.")
 
                 analysis_frames = int(ANALYSIS_SECONDS * SAMPLE_RATE)
-                samples = samples[:analysis_frames]
-                if len(samples) < analysis_frames:
-                    samples = np.pad(samples, (0, analysis_frames - len(samples)))
-
                 with self._lock:
                     self._ring.append(samples)
-                detections = self.birdnet.analyze(int16_to_float32(samples), SAMPLE_RATE, job.received_at)
+                    self._browser_samples = np.concatenate((self._browser_samples, samples))[-analysis_frames:]
+                    if len(self._browser_samples) < analysis_frames:
+                        continue
+                    analysis_samples = self._browser_samples.copy()
+                window_started_at = job.received_at - timedelta(seconds=ANALYSIS_SECONDS)
+                detections = self.birdnet.analyze(int16_to_float32(analysis_samples), SAMPLE_RATE, window_started_at)
                 for detection in detections:
+                    species_key = str(detection.get("scientific_name") or detection.get("common_name") or "onbekend")
+                    with self._lock:
+                        last_published = self._browser_detection_last_published.get(species_key)
+                        if last_published and (job.received_at - last_published).total_seconds() < 2.5:
+                            continue
+                        self._browser_detection_last_published[species_key] = job.received_at
                     start_seconds = float(detection.get("start_time") or 0)
                     end_seconds = float(detection.get("end_time") or ANALYSIS_SECONDS)
                     start = max(0, int((start_seconds - PRE_ROLL_SECONDS) * SAMPLE_RATE))
-                    end = min(len(samples), int((end_seconds + POST_ROLL_SECONDS) * SAMPLE_RATE))
-                    clip_samples = samples[start:end]
+                    end = min(len(analysis_samples), int((end_seconds + POST_ROLL_SECONDS) * SAMPLE_RATE))
+                    clip_samples = analysis_samples[start:end]
                     if len(clip_samples):
-                        detected_at = job.received_at + timedelta(seconds=start_seconds)
+                        detected_at = window_started_at + timedelta(seconds=start_seconds)
                         self._save_and_publish_detection(detection, clip_samples, detected_at, "browsermicrofoon")
             except Exception as exc:
                 message = f"Browseranalyse mislukt: {exc}"

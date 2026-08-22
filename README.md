@@ -8,7 +8,7 @@ De applicatie is bedoeld voor onderzoek en kleinschalig gebruik. Een detectie is
 
 ## Mogelijkheden
 
-- Browsermicrofoon live analyseren in blokken van drie seconden.
+- Browsermicrofoon iedere 0,3 seconden vernieuwen met een doorlopend analysevenster van drie seconden.
 - Vogelgeluiden filteren op geografische locatie en minimale confidence.
 - De volledige sessie lokaal opslaan als MP3, M4A of WAV.
 - Detectiefragmenten en spectrogrammen lokaal bewaren.
@@ -103,6 +103,8 @@ export BIRDNET_MIN_CONFIDENCE=0.60
 export BIRDNET_MODEL_VERSION=2.4
 export BIRDNET_FULL_RECORD_FORMAT=mp3
 export BIRDNET_FULL_RECORD_MP3_BITRATE=128k
+export BIRDNET_LIVE_SPECTROGRAM_SECONDS=2.5
+export BIRDNET_SPECTROGRAM_MAX_FREQ=10000
 export BIRDNET_PORT=5055
 python app.py
 ```
