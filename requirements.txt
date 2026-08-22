@@ -2,6 +2,7 @@ Flask>=3.0
 gunicorn>=23.0
 imageio-ffmpeg>=0.5
 audioop-lts>=0.2; python_version >= "3.13"
+audioread>=3.0
 numpy>=1.26
 scipy>=1.11
 matplotlib>=3.8
