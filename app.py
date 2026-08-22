@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -111,6 +113,9 @@ LIVE_CHUNK_QUEUE_SIZE = env_int("BIRDNET_LIVE_CHUNK_QUEUE_SIZE", 2)
 # betere resultaten, bijvoorbeeld: BIRDNET_LAT=52.37 BIRDNET_LON=4.90.
 BIRDNET_LAT = env_float("BIRDNET_LAT", 52.1326)
 BIRDNET_LON = env_float("BIRDNET_LON", 5.2913)
+BIRDNET_LOCATION_NAME = os.getenv("BIRDNET_LOCATION_NAME", "").strip()
+LOCATION_CACHE_PATH = DATA_DIR / "location-cache.json"
+NOMINATIM_REVERSE_URL = os.getenv("BIRDNET_REVERSE_GEOCODER_URL", "https://nominatim.openstreetmap.org/reverse")
 
 
 INDEX_HTML = """
@@ -119,7 +124,7 @@ INDEX_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Live vogelgeluiden</title>
+  <title>tjilp!</title>
   <style>
     :root {
       color-scheme: light;
@@ -149,6 +154,25 @@ INDEX_HTML = """
       justify-content: space-between;
       align-items: flex-end;
       margin-bottom: 20px;
+    }
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .brand-logo {
+      width: 52px;
+      height: 52px;
+      flex: 0 0 auto;
+      color: var(--ink);
+    }
+    .brand-logo .fill { fill: currentColor; }
+    .brand-logo .line {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
     h1 {
       margin: 0 0 4px;
@@ -232,6 +256,12 @@ INDEX_HTML = """
       font-weight: 700;
       overflow-wrap: anywhere;
     }
+    .metric small {
+      display: block;
+      margin-top: 5px;
+      font-size: 11px;
+    }
+    .metric small a { color: var(--muted); }
     .panel {
       padding: 0;
       overflow: hidden;
@@ -317,9 +347,17 @@ INDEX_HTML = """
 <body>
   <main>
     <header>
-      <div>
-        <h1>Live vogelgeluiden</h1>
-        <p>Herken vogelgeluiden met de microfoon van je browser.</p>
+      <div class="brand">
+        <svg class="brand-logo" viewBox="0 0 64 64" role="img" aria-label="Tjilpende vogel">
+          <path class="fill" d="M14 42c0-11 9-20 20-20 7 0 13 4 17 10l9-4-6 9c1 2 1 3 1 5 0 11-9 18-21 18-11 0-20-7-20-18Z"/>
+          <circle fill="white" cx="40" cy="32" r="2.4"/>
+          <path class="line" d="M12 38c-4-2-6-5-7-8M14 29c-3-3-4-6-4-10"/>
+          <path class="line" d="M24 52c-2 3-4 5-7 6M35 54c1 3 3 5 6 6"/>
+        </svg>
+        <div>
+          <h1>tjilp!</h1>
+          <p>snel de vogel bij de tjilp.</p>
+        </div>
       </div>
     </header>
 
@@ -350,11 +388,11 @@ INDEX_HTML = """
       <div class="metric"><b>Min. zekerheid</b><span id="confidence">-</span></div>
       <div class="metric"><b>Volledige opname</b><span id="recording">-</span></div>
       <div class="metric"><b>Invoerapparaat</b><span id="inputDevice">-</span></div>
-      <div class="metric"><b>Vóór MP3</b><span id="wavSize">-</span></div>
-      <div class="metric"><b>Na MP3</b><span id="compressedSize">-</span></div>
+      <div class="metric"><b>Originele opname</b><span id="originalSize">-</span></div>
+      <div class="metric"><b>Analyse-opname</b><span id="analysisSize">-</span></div>
       <div class="metric"><b>Uploadanalyse</b><span id="uploadState">-</span></div>
       <div class="metric"><b>Browseranalyse</b><span id="browserState">-</span></div>
-      <div class="metric"><b>Locatie</b><span id="location">-</span></div>
+      <div class="metric"><b>Locatie</b><span id="location">-</span><small id="locationAttribution" hidden><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap-bijdragers</a></small></div>
     </section>
 
     <section class="panel" style="margin-bottom: 16px;">
@@ -398,11 +436,12 @@ INDEX_HTML = """
       confidence: document.querySelector("#confidence"),
       recording: document.querySelector("#recording"),
       inputDevice: document.querySelector("#inputDevice"),
-      wavSize: document.querySelector("#wavSize"),
-      compressedSize: document.querySelector("#compressedSize"),
+      originalSize: document.querySelector("#originalSize"),
+      analysisSize: document.querySelector("#analysisSize"),
       uploadState: document.querySelector("#uploadState"),
       browserState: document.querySelector("#browserState"),
       location: document.querySelector("#location"),
+      locationAttribution: document.querySelector("#locationAttribution"),
       detections: document.querySelector("#detections"),
       liveSpectrogram: document.querySelector("#liveSpectrogram"),
       spectrogramState: document.querySelector("#spectrogramState")
@@ -463,10 +502,11 @@ INDEX_HTML = """
           ? "Lokale opname actief"
           : "Gestopt";
       els.confidence.textContent = `${Math.round(data.min_confidence * 100)}%`;
-      els.location.textContent = `${data.lat}, ${data.lon}`;
+      els.location.textContent = data.location_name || `${data.lat}, ${data.lon}`;
+      els.locationAttribution.hidden = data.location_source !== "nominatim";
       els.inputDevice.textContent = data.input_device?.name || "-";
-      els.wavSize.textContent = formatMb(data.wav_before_compression_mb);
-      els.compressedSize.textContent = formatMb(data.compressed_recording_mb);
+      els.originalSize.textContent = formatMb(data.original_recording_mb);
+      els.analysisSize.textContent = formatMb(data.analysis_recording_mb);
       els.uploadState.textContent = data.upload_running ? `Bezig: ${data.upload_name}` : "Geen";
       const browserParts = [];
       if (browserRecordingActive) browserParts.push("opname actief");
@@ -878,6 +918,62 @@ def bytes_to_mb(value: int | None) -> float | None:
     return round(value / (1024 * 1024), 3)
 
 
+class LocationResolver:
+    """Resolve the configured BirdNET coordinates once and cache the place name."""
+
+    def __init__(self, lat: float, lon: float, configured_name: str) -> None:
+        self.lat = lat
+        self.lon = lon
+        self._lock = threading.Lock()
+        self._name = configured_name
+        self._source = "configured" if configured_name else None
+        if not configured_name:
+            cached_name = self._load_cache()
+            if cached_name:
+                self._name = cached_name
+                self._source = "nominatim"
+            else:
+                threading.Thread(target=self._resolve, daemon=True).start()
+
+    def status(self) -> tuple[str | None, str | None]:
+        with self._lock:
+            return self._name, self._source
+
+    def _load_cache(self) -> str | None:
+        try:
+            cached = json.loads(LOCATION_CACHE_PATH.read_text(encoding="utf-8"))
+            if cached.get("lat") == self.lat and cached.get("lon") == self.lon:
+                name = str(cached.get("name") or "").strip()
+                return name or None
+        except (OSError, ValueError, TypeError):
+            pass
+        return None
+
+    def _resolve(self) -> None:
+        params = urlencode({"format": "jsonv2", "lat": self.lat, "lon": self.lon, "zoom": 10, "addressdetails": 1})
+        try:
+            request_url = f"{NOMINATIM_REVERSE_URL}?{params}"
+            response = Request(request_url, headers={"User-Agent": "live-birdnet-vogelherkenning/1.0"})
+            with urlopen(response, timeout=5) as raw_response:
+                payload = json.load(raw_response)
+            address = payload.get("address") or {}
+            name = next(
+                (str(address[key]).strip() for key in ("city", "town", "village", "municipality", "hamlet", "county", "state", "country") if address.get(key)),
+                "",
+            )
+            if not name:
+                return
+            with self._lock:
+                self._name = name
+                self._source = "nominatim"
+            LOCATION_CACHE_PATH.write_text(
+                json.dumps({"lat": self.lat, "lon": self.lon, "name": name}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            print(f"Plaatsnaam kon niet worden bepaald: {exc}")
+
+
 def default_input_device_info() -> dict[str, Any]:
     if sd is None:
         return {"name": "Onbekend", "index": None, "sample_rate": SAMPLE_RATE}
@@ -1217,6 +1313,7 @@ class AnalysisJob:
 class BrowserChunkJob:
     upload_path: Path
     received_at: datetime
+    original_bytes: int
 
 
 class RecorderService:
@@ -1245,6 +1342,8 @@ class RecorderService:
         self._browser_chunk_thread.start()
         self._browser_live_processing = False
         self._browser_live_error: str | None = None
+        self._browser_original_bytes: int | None = None
+        self._browser_analysis_bytes: int | None = None
         self._ring = SampleRing(SAMPLE_RATE, RING_BUFFER_SECONDS)
 
     def start(self) -> dict[str, Any]:
@@ -1270,6 +1369,8 @@ class RecorderService:
             self._temp_recording_bytes = None
             self._pre_compression_bytes = None
             self._compressed_recording_bytes = None
+            self._browser_original_bytes = None
+            self._browser_analysis_bytes = None
             temp_name = self._session_started_at.strftime("%Y%m%d-%H%M%S-full-record.tmp.wav")
             self._recording_temp_path = unique_path(RECORDINGS_DIR, temp_name)
             self._recording_path = compressed_recording_path(self._recording_temp_path)
@@ -1307,6 +1408,7 @@ class RecorderService:
         return {"ok": True, "message": "Opname gestopt."}
 
     def status(self) -> dict[str, Any]:
+        location_name, location_source = location_resolver.status()
         with self._lock:
             recording_path = self._recording_path
             recording_temp_path = self._recording_temp_path
@@ -1321,10 +1423,18 @@ class RecorderService:
             browser_live_processing = self._browser_live_processing
             browser_live_error = self._browser_live_error
             browser_live_pending = self._browser_chunk_queue.qsize()
+            browser_original_bytes = self._browser_original_bytes
+            browser_analysis_bytes = self._browser_analysis_bytes
         visible_recording_path = recording_path if recording_path and recording_path.exists() else None
         temp_size = file_size_bytes(recording_temp_path)
         wav_before_compression_bytes = pre_compression_bytes or temp_recording_bytes or temp_size
         final_compressed_bytes = compressed_recording_bytes or file_size_bytes(visible_recording_path)
+        if browser_original_bytes is not None:
+            original_recording_bytes = browser_original_bytes
+            analysis_recording_bytes = browser_analysis_bytes
+        else:
+            original_recording_bytes = wav_before_compression_bytes
+            analysis_recording_bytes = final_compressed_bytes
         visible_input_device = input_device or default_input_device_info()
 
         return {
@@ -1334,6 +1444,8 @@ class RecorderService:
             "min_confidence": MIN_CONFIDENCE,
             "lat": BIRDNET_LAT,
             "lon": BIRDNET_LON,
+            "location_name": location_name,
+            "location_source": location_source,
             "input_device": visible_input_device,
             "recording_format": FULL_RECORD_FORMAT,
             "recording_name": visible_recording_path.name if visible_recording_path else None,
@@ -1342,6 +1454,10 @@ class RecorderService:
             "wav_before_compression_mb": bytes_to_mb(wav_before_compression_bytes),
             "compressed_recording_bytes": final_compressed_bytes,
             "compressed_recording_mb": bytes_to_mb(final_compressed_bytes),
+            "original_recording_bytes": original_recording_bytes,
+            "original_recording_mb": bytes_to_mb(original_recording_bytes),
+            "analysis_recording_bytes": analysis_recording_bytes,
+            "analysis_recording_mb": bytes_to_mb(analysis_recording_bytes),
             "upload_running": upload_running,
             "upload_name": upload_name,
             "browser_live_processing": browser_live_processing,
@@ -1594,8 +1710,12 @@ class RecorderService:
                     "error": "Stop eerst de lokale servermicrofoon voordat je de browsermicrofoon gebruikt.",
                 }
             self._browser_live_error = None
+            self._browser_original_bytes = file_size_bytes(upload_path)
+            self._browser_analysis_bytes = None
         try:
-            self._browser_chunk_queue.put_nowait(BrowserChunkJob(upload_path, datetime.now()))
+            self._browser_chunk_queue.put_nowait(
+                BrowserChunkJob(upload_path, datetime.now(), file_size_bytes(upload_path) or 0)
+            )
         except queue.Full:
             upload_path.unlink(missing_ok=True)
             return {
@@ -1615,6 +1735,9 @@ class RecorderService:
                     self._browser_live_error = None
 
                 convert_audio_to_analysis_wav(job.upload_path, analysis_wav_path)
+                with self._lock:
+                    self._browser_original_bytes = job.original_bytes
+                    self._browser_analysis_bytes = file_size_bytes(analysis_wav_path)
                 samples, sample_rate = read_wav_int16(analysis_wav_path)
                 if sample_rate != SAMPLE_RATE:
                     raise RuntimeError(f"Onverwachte samplerate na conversie: {sample_rate}")
@@ -1686,6 +1809,7 @@ class RecorderService:
 
 app = Flask(__name__)
 broker = EventBroker()
+location_resolver = LocationResolver(BIRDNET_LAT, BIRDNET_LON, BIRDNET_LOCATION_NAME)
 name_resolver = DutchNameResolver(DUTCH_NAMES_CSV)
 birdnet_service = BirdNetService(name_resolver)
 recorder = RecorderService(broker, birdnet_service)
